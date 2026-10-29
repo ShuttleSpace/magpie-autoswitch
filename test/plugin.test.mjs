@@ -1,0 +1,253 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { createConsole } from "../src/console.mjs";
+import { gatewayAddress } from "../src/gateway.mjs";
+import { createFreeSwitchPlugin } from "../src/plugin.mjs";
+
+function tmpdir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "magpie-free-switch-"));
+}
+
+async function fakeGateway(handler) {
+  const calls = [];
+  const server = http.createServer(async (req, res) => {
+    if (req.url === "/v1/models") {
+      const rows = handler.models ?? [];
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: rows }));
+      return;
+    }
+    if (req.url === "/v1/chat/completions") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      calls.push(body);
+      return handler.chat(req, res, body, calls);
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  return {
+    calls,
+    url: `127.0.0.1:${port}`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+function models() {
+  return [
+    {
+      id: "zen/a",
+      owned_by: "opencode-zen-free",
+      display_name: "Zen A",
+      pricing: { prompt: "0", completion: "0" },
+      tool_call: true,
+      reasoning: true,
+      reasoning_levels: ["low", "high"],
+      modalities: { input: ["text", "image"], output: ["text"] },
+      context_window: 128000,
+      max_output_tokens: 32000,
+    },
+    {
+      id: "zen/b",
+      owned_by: "opencode-zen-free",
+      display_name: "Zen B",
+      pricing: { prompt: "0", completion: "0" },
+      tool_call: true,
+      reasoning: true,
+      modalities: { input: ["text"], output: ["text"] },
+      context_window: 64000,
+      max_output_tokens: 16000,
+    },
+    {
+      id: "paid/c",
+      owned_by: "paid",
+      display_name: "Paid C",
+      pricing: { prompt: "0.000001", completion: "0.000002" },
+      modalities: { input: ["text"], output: ["text"] },
+    },
+    {
+      id: "auto/group",
+      owned_by: "opencode-zen-free",
+      display_name: "Group",
+      pricing: { prompt: "0", completion: "0" },
+      modalities: { input: ["text"], output: ["text"] },
+    },
+  ];
+}
+
+test("failover marks a 429 model cooling and the next request starts with the awake one", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  const gateway = await fakeGateway({
+    models: models(),
+    chat(req, res, body) {
+      if (body.model === "zen/a") {
+        res.writeHead(429, { "content-type": "application/json", "retry-after": "20" });
+        res.end(JSON.stringify({ error: { message: "rate limited, try again in 20s" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "chat-1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+    },
+  });
+  process.env.MAGPIE_ADDR = gateway.url;
+  const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+  const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+  const request = () =>
+    loader.fetch(`${loader.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-magpie-session": "ses-test" },
+      body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+    });
+
+  const first = await request();
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get("x-free-switch-model"), "zen/b");
+  assert.equal(first.headers.get("x-free-switch-attempts"), "2");
+  const firstBody = await first.json();
+  assert.equal(firstBody.model, "zen/b");
+  assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/a", "zen/b"]);
+
+  const state = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "state.json"), "utf8"));
+  assert.ok(state.models["zen/a"].until > Date.now());
+  assert.equal(state.models["zen/b"].failures, 0);
+  assert.equal(state.stats.requests, 1);
+  assert.equal(state.stats.switches, 1);
+
+  gateway.calls.length = 0;
+  const second = await request();
+  assert.equal(second.status, 200);
+  assert.equal(second.headers.get("x-free-switch-model"), "zen/b");
+  assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/b"], "the cooling model is not tried while an awake one exists");
+
+  const traces = fs
+    .readFileSync(path.join(dir, "free-switch", "traces.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(traces.length, 2);
+  assert.equal(traces[0].attempts.length, 2);
+  assert.equal(traces[0].ok, true);
+  assert.equal(traces[0].attempts[0].status, 429);
+  assert.equal(traces[0].attempts[1].status, 200);
+
+  await hooks.lifecycle.dispose();
+  const restarted = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+  const restartedLoader = await restarted.auth.loader(async () => ({ type: "api", key: "public" }));
+  gateway.calls.length = 0;
+  const afterRestart = await restartedLoader.fetch(`${restartedLoader.baseURL}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(afterRestart.status, 200);
+  assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/b"], "the cooldown survives a plugin restart");
+  await restarted.lifecycle.dispose();
+
+  await gateway.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a streamed reply is peeked before any byte is handed to the caller", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  const gateway = await fakeGateway({
+    models: models(),
+    chat(req, res, body) {
+      if (body.model === "zen/a") {
+        res.writeHead(429, { "content-type": "application/json", "retry-after": "30" });
+        res.end(JSON.stringify({ error: { message: "rate limited" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write('data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n');
+      res.write("data: [DONE]\n\n");
+      res.end();
+    },
+  });
+  process.env.MAGPIE_ADDR = gateway.url;
+  const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+  const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+  const response = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "auto", stream: true, messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-free-switch-model"), "zen/b");
+  const text = await response.text();
+  assert.match(text, /hello/);
+  assert.match(text, /\[DONE\]/);
+  assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/a", "zen/b"]);
+  await hooks.lifecycle.dispose();
+  await gateway.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a caller-shaped 400 is passed through instead of burning every free model", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  const gateway = await fakeGateway({
+    models: models(),
+    chat(req, res, body) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "invalid temperature" } }));
+    },
+  });
+  process.env.MAGPIE_ADDR = gateway.url;
+  const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+  const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+  const response = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "auto", temperature: 9, messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(response.status, 400);
+  assert.equal(gateway.calls.length, 1);
+  assert.match(await response.text(), /invalid temperature/);
+  await hooks.lifecycle.dispose();
+  await gateway.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("the gateway address is normalized for loopback and IPv6", () => {
+  const previous = process.env.MAGPIE_ADDR;
+  try {
+    process.env.MAGPIE_ADDR = "0.0.0.0:3425";
+    assert.equal(gatewayAddress(), "http://127.0.0.1:3425");
+    process.env.MAGPIE_ADDR = "[::1]:3425";
+    assert.equal(gatewayAddress(), "http://[::1]:3425");
+    process.env.MAGPIE_ADDR = "http://localhost:4000/v1";
+    assert.equal(gatewayAddress(), "http://localhost:4000");
+    delete process.env.MAGPIE_ADDR;
+    assert.equal(gatewayAddress(), "http://127.0.0.1:3425");
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_ADDR;
+    else process.env.MAGPIE_ADDR = previous;
+  }
+});
+
+test("the console serves the page and its state on loopback", async () => {
+  const consoleServer = createConsole({
+    getState: async () => ({ now: 123, stats: { requests: 1 }, models: [], traces: [] }),
+    refresh: async () => {},
+    clearCooldown: async () => {},
+  });
+  const url = await consoleServer.start(0);
+  assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/);
+  const page = await fetch(`${url}/`);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /FREE \/ SWITCH/);
+  const state = await fetch(`${url}/api/state`);
+  assert.equal(state.status, 200);
+  assert.equal((await state.json()).now, 123);
+  await consoleServer.stop();
+  assert.equal(consoleServer.running, false);
+});

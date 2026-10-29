@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Free Switch · Console</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: rgba(18, 25, 34, 0.82);
+    --panel-2: rgba(24, 33, 45, 0.72);
+    --line: rgba(148, 163, 184, 0.16);
+    --line-strong: rgba(148, 163, 184, 0.28);
+    --ink: #e6edf3;
+    --muted: #8b98a9;
+    --dim: #5d6b7c;
+    --amber: #ffb454;
+    --teal: #5eead4;
+    --red: #ff6b6b;
+    --green: #7ee787;
+    --shadow: 0 18px 60px rgba(0, 0, 0, 0.42);
+  }
+  [data-theme="light"] {
+    --bg: #f7f9fc;
+    --panel: rgba(255, 255, 255, 0.7);
+    --panel-2: rgba(244, 247, 250, 0.6);
+    --line: rgba(148, 163, 184, 0.22);
+    --line-strong: rgba(148, 163, 184, 0.35);
+    --ink: #0f172a;
+    --muted: #64748b;
+    --dim: #94a3b8;
+    --amber: #d97706;
+    --teal: #0f766e;
+    --red: #dc2626;
+    --green: #15803d;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  }
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background:
+      radial-gradient(900px 500px at 12% -8%, rgba(255, 180, 84, 0.13), transparent 62%),
+      radial-gradient(760px 440px at 92% 0%, rgba(94, 234, 212, 0.10), transparent 60%),
+      linear-gradient(180deg, #0a0e13 0%, #0b1016 52%, #080b10 100%);
+    font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+  [data-theme="light"] body {
+    background:
+      radial-gradient(900px 500px at 12% -8%, rgba(255, 180, 84, 0.08), transparent 62%),
+      radial-gradient(760px 440px at 92% 0%, rgba(94, 234, 212, 0.06), transparent 60%),
+      #f7f9fc;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px);
+    background-size: 42px 42px;
+    mask-image: linear-gradient(180deg, rgba(0,0,0,0.9), transparent 78%);
+  }
+  [data-theme="light"] body::before { mask-image: linear-gradient(180deg, rgba(0,0,0,0.5), transparent 78%); }
+  .shell { position: relative; width: min(1240px, calc(100% - 40px)); margin: 0 auto; padding: 34px 0 54px; }
+  header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .mark {
+    width: 46px; height: 46px; border-radius: 13px; flex: 0 0 auto;
+    background: linear-gradient(145deg, rgba(255,180,84,0.20), rgba(94,234,212,0.12));
+    border: 1px solid rgba(255,180,84,0.35);
+    display: grid; place-items: center;
+    box-shadow: 0 0 28px rgba(255,180,84,0.12);
+  }
+  [data-theme="light"] .mark {
+    background: linear-gradient(145deg, rgba(217,119,6,0.15), rgba(15,118,110,0.10));
+    border-color: rgba(217,119,6,0.35);
+    box-shadow: 0 0 28px rgba(217,119,6,0.10);
+  }
+  .mark svg { width: 28px; height: 28px; }
+  h1 { margin: 0; font-size: 24px; letter-spacing: 0.12em; font-weight: 700; }
+  .sub { margin-top: 2px; color: var(--muted); font-size: 12.5px; letter-spacing: 0.03em; }
+  .head-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line);
+    background: rgba(13, 19, 27, 0.72); color: var(--muted);
+    font-size: 12px; white-space: nowrap;
+  }
+  [data-theme="light"] .pill { background: rgba(255,255,255,0.6); border-color: var(--line-strong); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); box-shadow: 0 0 0 0 rgba(126,231,135,0.5); }
+  .dot.ok { background: var(--green); animation: pulse 2.2s infinite; }
+  .dot.bad { background: var(--red); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(126,231,135,0.38); } 70% { box-shadow: 0 0 0 7px rgba(126,231,135,0); } 100% { box-shadow: 0 0 0 0 rgba(126,231,135,0); } }
+  button {
+    font: inherit; color: var(--ink); cursor: pointer;
+    border: 1px solid var(--line-strong); background: rgba(20, 28, 38, 0.86);
+    padding: 7px 12px; border-radius: 8px; transition: border-color .16s ease, transform .16s ease, background .16s ease;
+  }
+  [data-theme="light"] button { background: rgba(255,255,255,0.7); border-color: var(--line-strong); color: var(--ink); }
+  button:hover { border-color: rgba(255,180,84,0.55); background: rgba(28, 37, 49, 0.94); }
+  [data-theme="light"] button:hover { background: rgba(255,255,255,0.9); border-color: var(--amber); }
+  button:active { transform: translateY(1px); }
+  button.ghost { background: transparent; color: var(--muted); }
+  button.danger:hover { border-color: rgba(255,107,107,0.6); color: #ffd0d0; }
+  .active-bar {
+    display: flex; align-items: center; gap: 9px; margin-bottom: 16px; padding: 9px 15px;
+    border-radius: 11px; border: 1px solid rgba(94,234,212,0.32);
+    background: rgba(94,234,212,0.07); font-size: 13px;
+  }
+  [data-theme="light"] .active-bar { background: rgba(15,118,110,0.06); border-color: rgba(15,118,110,0.32); }
+  .active-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 0 0 rgba(94,234,212,0.5); animation: pulse 2.2s infinite; }
+  .active-provider { color: var(--muted); font-size: 12.5px; }
+  .active-model { color: var(--teal); font-size: 14px; font-weight: 600; word-break: break-all; }
+  .active-bar .arrow { color: var(--dim); }
+  .active-bar .dim { margin-left: auto; font-size: 12px; }
+  tr.active td { background: rgba(94,234,212,0.08); }
+  tr.active td:first-child { box-shadow: inset 3px 0 0 var(--teal); }
+  .tag.live { color: var(--teal); border-color: rgba(94,234,212,0.34); background: rgba(94,234,212,0.08); }
+
+  .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: var(--shadow); backdrop-filter: blur(12px);
+  }
+  .stat { padding: 15px 16px; min-height: 86px; }
+  .stat .k { color: var(--muted); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .stat .v { margin-top: 6px; font-size: 28px; line-height: 1.1; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .stat .v small { font-size: 13px; color: var(--muted); font-weight: 500; }
+  .stat.accent .v { color: var(--amber); }
+  .stat.teal .v { color: var(--teal); }
+  .stat.red .v { color: var(--red); }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .panel { overflow: hidden; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .panel-title { font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+  .panel-title strong { color: var(--ink); font-weight: 650; }
+  .panel-body { padding: 14px 16px 16px; }
+  .models-body { max-height: 640px; overflow: auto; }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input[type="search"] {
+    font: inherit; color: var(--ink); width: 180px;
+    border: 1px solid var(--line); background: rgba(8, 12, 17, 0.7);
+    border-radius: 8px; padding: 7px 10px; outline: none;
+  }
+  [data-theme="light"] input[type="search"] { background: rgba(255,255,255,0.8); border-color: var(--line); color: var(--ink); }
+  input[type="search"]:focus { border-color: rgba(94,234,212,0.55); }
+  select.select {
+    font: inherit; color: var(--ink); cursor: pointer;
+    border: 1px solid var(--line); background: rgba(8, 12, 17, 0.7);
+    border-radius: 8px; padding: 7px 9px; outline: none;
+  }
+  [data-theme="light"] select.select { background: rgba(255,255,255,0.8); border-color: var(--line); color: var(--ink); }
+  select.select:focus { border-color: rgba(94,234,212,0.55); }
+  .tree-head { display: grid; grid-template-columns: 92px 1fr 150px 46px 60px; gap: 10px; padding: 0 10px 9px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; }
+  .tree { display: flex; flex-direction: column; }
+  .prov-group { border-bottom: 1px solid rgba(148,163,184,0.07); }
+  .prov-group:last-child { border-bottom: 0; }
+  .prov-head { display: flex; align-items: center; gap: 9px; padding: 9px 10px; cursor: pointer; user-select: none; position: sticky; top: 0; background: var(--panel); z-index: 1; }
+  .prov-head:hover { background: rgba(148,163,184,0.05); }
+  .prov-head .caret { color: var(--dim); width: 12px; display: inline-block; transition: transform 0.15s ease; }
+  .prov-group.collapsed .caret { transform: rotate(-90deg); }
+  .prov-name { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; font-weight: 600; color: var(--ink); }
+  .prov-meta { font-size: 11.5px; }
+  .prov-body { padding: 2px 0 6px; }
+  .model-row { display: grid; grid-template-columns: 92px 1fr 150px 46px 60px; gap: 10px; align-items: center; padding: 9px 10px; border-radius: 8px; }
+  .model-row:hover { background: rgba(148,163,184,0.04); }
+  .model-row.active { background: rgba(94,234,212,0.08); box-shadow: inset 3px 0 0 var(--teal); }
+  .model-row .id { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; word-break: break-all; }
+  .model-row .name { color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+  .model-row .mr-last { font-size: 12px; color: var(--muted); }
+  .model-row .mr-fail { text-align: center; }
+  .model-row .mr-action { text-align: right; }
+
+  th { text-align: left; color: var(--dim); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; padding: 0 8px 9px; border-bottom: 1px solid var(--line); }
+  td { padding: 10px 8px; border-bottom: 1px solid rgba(148,163,184,0.09); vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  tr:hover td { background: rgba(148,163,184,0.035); }
+  .model { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; }
+  .model .id { color: var(--ink); word-break: break-all; }
+  .model .name { color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+  .tag { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 6px; font-size: 11px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .tag.awake { color: var(--green); border-color: rgba(126,231,135,0.28); background: rgba(126,231,135,0.07); }
+  .tag.cooling { color: var(--amber); border-color: rgba(255,180,84,0.28); background: rgba(255,180,84,0.07); }
+  .tag.err { color: var(--red); border-color: rgba(255,107,107,0.28); background: rgba(255,107,107,0.07); }
+  .muted { color: var(--muted); }
+  .dim { color: var(--dim); }
+  .mono { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  .trace-list { display: flex; flex-direction: column; gap: 9px; max-height: 620px; overflow: auto; padding-right: 2px; }
+  .trace { border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); overflow: hidden; }
+  .trace-head { display: flex; align-items: center; gap: 9px; padding: 10px 12px; cursor: pointer; }
+  .trace-head:hover { background: rgba(148,163,184,0.04); }
+  .trace-head .caret { color: var(--dim); width: 12px; flex: 0 0 auto; display: inline-block; transform: rotate(-90deg); transition: transform 0.15s ease; }
+  .trace-head .caret.open { transform: rotate(0deg); }
+  .trace-time { color: var(--dim); font-size: 11.5px; width: 62px; flex: 0 0 auto; }
+  .trace-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .trace-model { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; word-break: break-all; }
+  .arrow { color: var(--dim); }
+  .trace-meta { color: var(--dim); font-size: 11.5px; white-space: nowrap; }
+  .attempts { padding: 0 12px 11px 83px; display: flex; flex-direction: column; gap: 5px; }
+  .attempt { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--muted); }
+  .attempt .who { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; color: var(--ink); word-break: break-all; }
+  .attempt .why { color: var(--dim); }
+  .attempt.ok .status { color: var(--green); }
+  .attempt.bad .status { color: var(--red); }
+  .attempt.warn .status { color: var(--amber); }
+  .empty { padding: 26px 8px; text-align: center; color: var(--dim); }
+  .banner { display: none; margin-bottom: 14px; padding: 10px 14px; border-radius: 9px; border: 1px solid rgba(255,107,107,0.35); background: rgba(255,107,107,0.08); color: #ffd0d0; font-size: 12.5px; }
+  [data-theme="light"] .banner { background: rgba(220,38,38,0.08); border-color: rgba(220,38,38,0.35); color: #dc2626; }
+  footer { margin-top: 18px; display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; color: var(--dim); font-size: 11.5px; }
+  footer code { color: var(--muted); }
+  @media (max-width: 920px) {
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid { grid-template-columns: 1fr; }
+    .trace-list { max-height: none; }
+  }
+  @media (max-width: 560px) {
+    .shell { width: calc(100% - 24px); padding-top: 20px; }
+    header { flex-direction: column; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .stat .v { font-size: 23px; }
+    .attempts { padding-left: 12px; }
+    input[type="search"] { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div class="brand">
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none">
+          <path d="M6 11h17l-4-4" stroke="#ffb454" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M26 21H9l4 4" stroke="#5eead4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="16" cy="16" r="2" fill="#e6edf3"/>
+        </svg>
+      </div>
+      <div>
+        <h1>FREE / SWITCH</h1>
+        <div class="sub">Magpie 免费模型自动切换 · 冷却与调用追踪</div>
+      </div>
+    </div>
+    <div class="head-right">
+      <span class="pill"><span id="health-dot" class="dot"></span><span id="health-text">连接中</span></span>
+      <button id="theme-toggle" class="ghost" type="button" title="切换主题">🌓</button>
+      <button id="refresh" class="ghost" type="button">刷新模型</button>
+      <button id="clear" class="ghost danger" type="button">清空冷却</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner"></div>
+
+  <div id="active-bar" class="active-bar" hidden>
+    <span class="active-dot"></span>
+    <span class="muted">当前活跃</span>
+    <span class="active-provider mono" id="active-provider"></span>
+    <span class="arrow">/</span>
+    <span class="active-model mono" id="active-model"></span>
+    <span class="dim" id="active-at"></span>
+  </div>
+
+  <section class="stats">
+    <div class="card stat accent"><div class="k">Requests</div><div class="v" id="s-requests">0</div></div>
+    <div class="card stat teal"><div class="k">Switches</div><div class="v" id="s-switches">0</div></div>
+    <div class="card stat"><div class="k">Success</div><div class="v" id="s-success">0 <small id="s-rate"></small></div></div>
+    <div class="card stat red"><div class="k">Exhausted</div><div class="v" id="s-exhausted">0</div></div>
+    <div class="card stat"><div class="k">Cooling</div><div class="v" id="s-cooling">0 <small id="s-awake"></small></div></div>
+  </section>
+
+  <div class="grid">
+    <section class="card panel">
+      <div class="panel-head">
+        <div class="panel-title"><strong>免费模型</strong> <span id="model-count" class="dim"></span></div>
+        <div class="toolbar">
+          <select id="sort" class="select" title="排序方式">
+            <option value="wake">苏醒时间</option>
+            <option value="name">按名称</option>
+            <option value="cooling">冷却优先</option>
+          </select>
+          <input id="filter" type="search" placeholder="过滤模型 / 提供商" autocomplete="off">
+        </div>
+      </div>
+      <div class="panel-body models-body">
+        <div class="tree-head"><div>状态</div><div>模型</div><div>最近</div><div>失败</div><div style="text-align:right">操作</div></div>
+        <div id="models" class="tree"></div>
+        <div id="models-empty" class="empty" hidden>还没有发现免费模型。点“刷新模型”，或检查 Magpie 里已启用的供应商。</div>
+      </div>
+    </section>
+
+    <section class="card panel" id="traces-panel">
+      <div class="panel-head">
+        <div class="panel-title"><strong>调用记录</strong> <span id="trace-count" class="dim"></span></div>
+        <div class="toolbar"><span class="tag" id="last-updated">—</span></div>
+      </div>
+      <div class="panel-body">
+        <div id="traces" class="trace-list"></div>
+        <div id="traces-empty" class="empty" hidden>还没有请求。把 Agent 的模型切到 <span class="mono">free-switch/auto</span> 后，这里会记录每次切换。</div>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <div>Gateway <code id="gateway">—</code></div>
+    <div>配置 <code id="config-path">—</code></div>
+    <div>只监听 127.0.0.1 · 每 2 秒自动刷新</div>
+  </footer>
+</div>
+<script>
+(function () {
+  "use strict";
+  var state = null;
+  var filter = "";
+  var loading = false;
+  var openTraces = new Set();
+  var collapsedProviders = new Set();
+  var sortMode = "wake";
+
+  // ---- 主题：跟随系统，手动可覆盖 ----
+  var THEME_KEY = "free-switch-theme";
+  var themeMode = "system"; // system | light | dark
+  var stored = null;
+  try { stored = localStorage.getItem(THEME_KEY); } catch { /* storage may be blocked */ }
+  if (stored === "light" || stored === "dark" || stored === "system") themeMode = stored;
+  function applyTheme() {
+    var root = document.documentElement;
+    var resolved;
+    if (themeMode === "system") {
+      resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    } else {
+      resolved = themeMode;
+    }
+    root.setAttribute("data-theme", resolved);
+    var btn = document.getElementById("theme-toggle");
+    if (btn) {
+      btn.title = "当前：" + (resolved === "dark" ? "深色" : "浅色") + "（" + (themeMode === "system" ? "跟随系统" : themeMode) + "）";
+    }
+  }
+  function saveTheme() {
+    try { localStorage.setItem(THEME_KEY, themeMode); } catch { /* ignore */ }
+  }
+  applyTheme();
+  try {
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+      if (themeMode === "system") applyTheme();
+    });
+  } catch { /* older browsers */ }
+
+  function esc(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+  function n(value) {
+    return Number(value || 0).toLocaleString("zh-CN");
+  }
+  function duration(ms) {
+    var v = Number(ms || 0);
+    if (v < 1000) return Math.max(0, Math.round(v)) + "ms";
+    if (v < 60000) return (v / 1000).toFixed(v < 10000 ? 1 : 0) + "s";
+    var m = Math.floor(v / 60000);
+    var s = Math.round((v % 60000) / 1000);
+    return m + "m" + (s ? " " + s + "s" : "");
+  }
+  function clock(ts) {
+    if (!ts) return "—";
+    var d = new Date(ts);
+    return d.toLocaleTimeString("zh-CN", { hour12: false });
+  }
+  function until(ts) {
+    if (!ts) return "";
+    var left = Number(ts) - Date.now();
+    if (left < 0) return "苏醒";
+    var d = Math.floor(left / 86400000);
+    var h = Math.floor((left % 86400000) / 3600000);
+    var m = Math.floor((left % 3600000) / 60000);
+    var parts = [];
+    if (d) parts.push(d + "d");
+    if (h) parts.push(h + "h");
+    if (m) parts.push(m + "m");
+    if (!parts.length) return "刚苏醒";
+    return parts.join(" ");
+  }
+  function statusClass(code) {
+    if (!code) return "warn";
+    if (code >= 200 && code < 300) return "ok";
+    if (code === 429) return "warn";
+    return "bad";
+  }
+  function statusText(attempt) {
+    if (attempt.error && !attempt.status) return "网络错误";
+    return attempt.status ? "HTTP " + attempt.status : "错误";
+  }
+  function compareModels(a, b, sortMode) {
+    var aC = a.cooling ? 1 : 0;
+    var bC = b.cooling ? 1 : 0;
+    if (sortMode === "cooling") {
+      // 冷却优先：冷却模型排前面，按剩余冷却时间升序（越快苏醒越靠前）
+      if (aC !== bC) return bC - aC;
+    } else {
+      // 苏醒时间 / 按名称：冷却模型压到最后，按剩余冷却时间升序（越快苏醒越靠前）
+      if (aC !== bC) return aC - bC;
+    }
+    // 同为冷却：按剩余冷却时间升序
+    if (a.cooling && b.cooling) return (a.until || 0) - (b.until || 0);
+    // 同为苏醒：按名称或最近成功时间
+    if (sortMode === "name") return String(a.id).localeCompare(String(b.id));
+    return (b.lastSuccessAt || 0) - (a.lastSuccessAt || 0);
+  }
+  function modelRow(m, activeId) {
+    var isActive = m.id === activeId;
+    var tag = isActive
+      ? '<span class="tag live">使用中</span>'
+      : m.cooling
+      ? '<span class="tag cooling">' + esc(until(m.until)) + "</span>"
+      : '<span class="tag awake">苏醒</span>';
+    var last = m.lastStatus
+      ? '<span class="tag ' + (m.lastStatus >= 200 && m.lastStatus < 300 ? "awake" : m.lastStatus === 429 ? "cooling" : "err") + '">' + esc(m.lastStatus) + "</span>"
+      : '<span class="dim">—</span>';
+    var name = m.name && m.name !== m.id ? '<div class="name">' + esc(m.name) + "</div>" : "";
+    var err = m.lastError ? '<div class="name" title="' + esc(m.lastError) + '">' + esc(String(m.lastError).slice(0, 90)) + "</div>" : "";
+    return '<div class="model-row' + (isActive ? " active" : "") + '" data-model="' + esc(m.id) + '">' +
+      '<div class="mr-status">' + tag + "</div>" +
+      '<div class="mr-model"><div class="id">' + esc(m.id) + "</div>" + name + err + "</div>" +
+      '<div class="mr-last">' + last + ' <span class="dim mono">' + (m.lastSuccessAt ? clock(m.lastSuccessAt) : "—") + "</span></div>" +
+      '<div class="mr-fail mono">' + n(m.failures) + "</div>" +
+      '<div class="mr-action"><button class="ghost" data-clear="' + esc(m.id) + '" type="button">清除</button></div>' +
+      "</div>";
+  }
+  function modelTree(models, activeId, sortMode) {
+    var q = filter.trim().toLowerCase();
+    var groups = {};
+    var order = [];
+    models.forEach(function (m) {
+      var p = m.provider || "—";
+      if (!groups[p]) { groups[p] = []; order.push(p); }
+      if (!q || (m.id + " " + m.provider + " " + m.name).toLowerCase().indexOf(q) >= 0) {
+        groups[p].push(m);
+      }
+    });
+    order.forEach(function (p) {
+      groups[p].sort(function (a, b) { return compareModels(a, b, sortMode); });
+    });
+    var parts = [];
+    order.forEach(function (p) {
+      var list = groups[p];
+      if (!list.length) return;
+      var awake = list.filter(function (m) { return !m.cooling; }).length;
+      var collapsed = collapsedProviders.has(p);
+      var rows = list.map(function (m) { return modelRow(m, activeId); }).join("");
+      parts.push(
+        '<div class="prov-group' + (collapsed ? " collapsed" : "") + '" data-prov="' + esc(p) + '">' +
+          '<div class="prov-head" data-toggle-prov="' + esc(p) + '">' +
+            '<span class="caret">▾</span>' +
+            '<span class="prov-name">' + esc(p) + "</span>" +
+            '<span class="prov-meta dim">' + list.length + " 个 · " + awake + " 苏醒</span>" +
+          "</div>" +
+          '<div class="prov-body"' + (collapsed ? " hidden" : "") + ">" + rows + "</div>" +
+        "</div>"
+      );
+    });
+    return parts.join("");
+  }
+  function traceRows(traces) {
+    var q = filter.trim().toLowerCase();
+    var rows = traces.filter(function (t) {
+      if (!q) return true;
+      var hay = [t.requested, t.finalModel, t.session].concat((t.attempts || []).map(function (a) { return a.model; })).join(" ");
+      return hay.toLowerCase().indexOf(q) >= 0;
+    });
+    if (!rows.length) return "";
+    return rows.map(function (t) {
+      var attempts = (t.attempts || []).map(function (a) {
+        var cls = statusClass(a.status);
+        var why = [];
+        if (a.reason) why.push(a.reason);
+        if (a.cooldownUntil) why.push(until(a.cooldownUntil));
+        if (a.error) why.push(String(a.error).slice(0, 120));
+        return '<div class="attempt ' + cls + '">' +
+          '<span class="status mono">' + esc(statusText(a)) + "</span>" +
+          '<span class="who">' + esc(a.model) + "</span>" +
+          '<span class="mono dim">' + duration(a.ms) + "</span>" +
+          (why.length ? '<span class="why">' + esc(why.join(" · ")) + "</span>" : "") +
+          "</div>";
+      }).join("");
+      var ok = t.ok ? '<span class="tag awake">成功</span>' : t.exhausted ? '<span class="tag err">耗尽</span>' : '<span class="tag err">失败</span>';
+      var open = openTraces.has(t.id);
+      return '<div class="trace">' +
+        '<div class="trace-head" data-toggle="' + esc(t.id) + '">' +
+        '<span class="caret' + (open ? " open" : "") + '">▾</span>' +
+        '<span class="trace-time mono">' + clock(t.at) + "</span>" +
+        '<span class="trace-main"><span class="trace-model">' + esc(t.requested || "auto") + "</span>" +
+        '<span class="arrow">→</span><span class="trace-model">' + esc(t.finalModel || "—") + "</span>" + ok + "</span>" +
+        '<span class="trace-meta mono">' + (t.attempts || []).length + " try · " + duration(t.durationMs) + "</span>" +
+        "</div>" +
+        (attempts ? '<div class="attempts"' + (open ? "" : " hidden") + ">" + attempts + "</div>" : "") +
+        "</div>";
+    }).join("");
+  }
+  function txt(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = value == null ? "" : value;
+  }
+  function html(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.innerHTML = value == null ? "" : value;
+  }
+  function hidden(id, isHidden) {
+    var el = document.getElementById(id);
+    if (el) el.hidden = !!isHidden;
+  }
+  function className(id, cls) {
+    var el = document.getElementById(id);
+    if (el) el.className = cls;
+  }
+  function render() {
+    if (!state) return;
+    var stats = state.stats || {};
+    var models = state.models || [];
+    var traces = state.traces || [];
+    var cooling = models.filter(function (m) { return m.cooling; }).length;
+    var awake = models.length - cooling;
+    txt("s-requests", n(stats.requests));
+    txt("s-switches", n(stats.switches));
+    txt("s-success", n(stats.successes));
+    txt("s-rate", stats.requests ? Math.round((stats.successes / stats.requests) * 100) + "%" : "");
+    txt("s-exhausted", n(stats.exhausted));
+    txt("s-cooling", n(cooling));
+    txt("s-awake", models.length ? "/ " + n(awake) + " 苏醒" : "");
+    txt("model-count", models.length ? "· " + models.length : "");
+    txt("trace-count", traces.length ? "· " + traces.length : "");
+    txt("gateway", state.gateway || "—");
+    txt("config-path", state.configFile || "—");
+    txt("last-updated", clock(state.now));
+
+    if (state.discoveryError) {
+      className("health-dot", "dot bad");
+      var healthText = document.getElementById("health-text");
+      if (healthText) { healthText.textContent = "模型发现失败"; healthText.title = state.discoveryError; }
+    } else {
+      className("health-dot", "dot ok");
+      var healthText = document.getElementById("health-text");
+      if (healthText) {
+        healthText.textContent = models.length ? "在线 · " + models.length + " 个免费模型" : "在线 · 未发现免费模型";
+        healthText.title = "";
+      }
+    }
+
+    var modelHTML = modelTree(models, state.activeModel ? state.activeModel.id : null, sortMode);
+    html("models", modelHTML);
+    hidden("models-empty", !!modelHTML);
+    if (state.activeModel && state.activeModel.id) {
+      hidden("active-bar", false);
+      var parts = String(state.activeModel.id).split("/");
+      txt("active-provider", parts.length > 1 ? parts[0] : "");
+      txt("active-model", parts.length > 1 ? parts.slice(1).join("/") : state.activeModel.id);
+      txt("active-at", clock(state.activeModel.at));
+    } else {
+      hidden("active-bar", true);
+    }
+    if (Array.isArray(state.traces)) {
+      var traceHTML = traceRows(state.traces);
+      html("traces", traceHTML);
+      hidden("traces-empty", !!traceHTML);
+      hidden("traces-panel", false);
+    } else {
+      // 调用记录数据缺失（获取不到）：整体不展示，仅提示
+      hidden("traces-panel", true);
+      banner("调用记录获取失败或数据缺失，已停用调用记录面板");
+    }
+  }
+  function banner(message) {
+    var el = document.getElementById("banner");
+    if (!el) return;
+    el.textContent = message || "";
+    el.className = "banner" + (message ? " show" : "");
+  }
+  async function load() {
+    if (loading) return;
+    loading = true;
+    try {
+      var res = await fetch("/api/state", { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      state = await res.json();
+      // 前端也做长度上限，防止 state 过大导致内存占用
+      if (state.traces && Array.isArray(state.traces) && state.traces.length > 100) {
+        state.traces = state.traces.slice(-100);
+      }
+      banner("");
+      render();
+    } catch (e) {
+      banner("控制台无法读取状态：" + (e && e.message ? e.message : e));
+      className("health-dot", "dot bad");
+      var healthText = document.getElementById("health-text");
+      if (healthText) healthText.textContent = "连接失败";
+    } finally {
+      loading = false;
+    }
+  }
+  async function action(path, body) {
+    try {
+      var res = await fetch(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      state = await res.json();
+      if (state.traces && Array.isArray(state.traces) && state.traces.length > 100) {
+        state.traces = state.traces.slice(-100);
+      }
+      banner("");
+      render();
+    } catch (e) {
+      banner("操作失败：" + (e && e.message ? e.message : e));
+    }
+  }
+  document.addEventListener("click", function (ev) {
+    var t = ev.target;
+    if (!t || !t.closest) return;
+    var clear = t.closest("[data-clear]");
+    if (clear) {
+      ev.stopPropagation();
+      action("/api/clear", { model: clear.getAttribute("data-clear") });
+      return;
+    }
+    var provToggle = t.closest("[data-toggle-prov]");
+    if (provToggle) {
+      var prov = provToggle.getAttribute("data-toggle-prov");
+      if (collapsedProviders.has(prov)) collapsedProviders.delete(prov);
+      else collapsedProviders.add(prov);
+      render();
+      return;
+    }
+    var toggle = t.closest("[data-toggle]");
+    if (toggle) {
+      var id = toggle.getAttribute("data-toggle");
+      if (openTraces.has(id)) openTraces.delete(id);
+      else openTraces.add(id);
+      var box = toggle.parentElement.querySelector(".attempts");
+      if (box) box.hidden = !box.hidden;
+    }
+    var themeBtn = t.closest("#theme-toggle");
+    if (themeBtn) {
+      if (themeMode === "system") themeMode = "light";
+      else if (themeMode === "light") themeMode = "dark";
+      else themeMode = "system";
+      saveTheme();
+      applyTheme();
+    }
+  });
+  var filterEl = document.getElementById("filter");
+  if (filterEl) filterEl.addEventListener("input", function (ev) {
+    filter = ev.target.value || "";
+    render();
+  });
+  var sortEl = document.getElementById("sort");
+  if (sortEl) sortEl.addEventListener("change", function (ev) {
+    sortMode = ev.target.value || "wake";
+    render();
+  });
+  var refreshEl = document.getElementById("refresh");
+  if (refreshEl) refreshEl.addEventListener("click", function () { action("/api/refresh"); });
+  var clearEl = document.getElementById("clear");
+  if (clearEl) clearEl.addEventListener("click", function () {
+    if (confirm("清空所有模型的冷却时间？")) action("/api/clear", {});
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) load();
+  });
+  load();
+  setInterval(function () { if (!document.hidden) load(); }, 2000);
+})();
+</script>
+</body>
+</html>

@@ -40,17 +40,18 @@ magpie plugin login free-switch
 2. **排序**：按 `config.json` 的 `priority` 排；没写进优先级的模型按 provider、model id 排序。默认优先：
    `opencode-zen-free` → `our-free-model` → `kilo` → `cline` → `workbuddy-ai` → `workbuddy`。
    默认还会按 provider 轮转：第一轮每个 provider 取一个模型，再取第二个，避免一个 provider 的免费池整体限流时占满所有重试次数。`diversifyProviders: false` 可改成严格按列表顺序。
-3. **苏醒优先**：没有冷却的模型排在前面；正在冷却的模型排在后面。如果所有模型都在冷却，就按原顺序逐个尝试确认。
-4. **能力匹配**：请求带 tools、图片或 reasoning 时，优先挑明确支持这些能力的模型；如果一个都不匹配，直接返回明确错误，避免把每个模型都试一遍。
-5. **切换**：每个请求最多尝试 `maxTries` 个模型（默认 6）。成功即返回；失败按状态码决定冷却时长。
-6. **冷却**：
+3. **偏好优先**：勾选了“偏好”的模型（见下方控制台说明）会排到最前面，优先被尝试，不管它们在 `priority` 列表里的顺序如何。适合把“有的模型太蠢了”这种不想要的模型压到后面，让好用的模型先上。
+4. **苏醒优先**：没有冷却的模型排在前面；正在冷却的模型排在后面。如果所有模型都在冷却，就按原顺序逐个尝试确认。
+5. **能力匹配**：请求带 tools、图片或 reasoning 时，优先挑明确支持这些能力的模型；如果一个都不匹配，直接返回明确错误，避免把每个模型都试一遍。
+6. **切换**：每个请求最多尝试 `maxTries` 个模型（默认 6）。成功即返回；失败按状态码决定冷却时长。
+7. **冷却**：
    - 429：优先用 `Retry-After`、`x-ratelimit-reset`、`x-ratelimit-reset-requests/tokens`、`anthropic-ratelimit-*-reset`、`x-magpie-limit-reset` 或错误正文里的 `resets_at` / “try again in 2m30s” 等提示；没有提示时默认 60 秒，连续失败翻倍。
    - 5xx / 断网 / 408 / 409 / 425：默认 30 秒，连续失败翻倍。
    - 401 / 403：默认 5 分钟。
    - 404 或明确的“模型不存在/不支持”：默认 10 分钟。
    - 400 / 422 这种请求本身的问题：直接返回，不会把每个模型都试一遍。
    - 所有冷却都受 `maxCooldownSeconds`（默认 8 小时）限制。
-7. **恢复**：冷却时间过去后，模型自动重新进入“苏醒”候选，和顺序更靠前的苏醒模型一起参与下一次选择；成功一次就清空失败计数。
+8. **恢复**：冷却时间过去后，模型自动重新进入“苏醒”候选，和顺序更靠前的苏醒模型一起参与下一次选择；成功一次就清空失败计数。
 
 ### 限时免费模型（如 `workbuddy-ai/hy4-preview`）
 
@@ -102,9 +103,12 @@ FREE_SWITCH_CONSOLE=1 FREE_SWITCH_CONSOLE_PORT=17890 magpie serve
 控制台只监听 `127.0.0.1`，不会暴露到局域网。页面每 2 秒刷新，显示：
 
 - 请求数、切换次数、成功率、耗尽次数、正在冷却的模型数；
-- 每个免费模型的苏醒/冷却状态、冷却剩余时间、最近状态、失败次数；
-- 最近 50 次请求的每次尝试：模型、HTTP 状态、耗时、冷却原因；
-- **刷新模型** 和 **清空冷却** 按钮，以及每个模型单独的“清除”按钮。
+- 每个免费模型按供应商树形分组，含苏醒/冷却状态、冷却剩余时间（天/时/分）、最近状态、失败次数；按“苏醒时间 / 名称 / 冷却优先”排序，冷却模型排到末尾；
+- **偏好勾选**：每个模型行里有一个复选框，勾上后该模型会排到最前面优先尝试（写入 `config.json` 的 `preferredModels`）。再点一次取消。面板标题会显示当前偏好模型数量；
+- **刷新模型** 和 **清空冷却** 按钮，以及每个模型单独的“清除”按钮；
+- **手动切换 / 禁用**：每个模型行有「切换」「清除」「禁用」按钮；「切换」把该模型设为**下一次** `free-switch/auto` 请求的强制目标（清空它自己的冷却与失败计数，并排到候选最前），提交后对当前已在进行中的请求不生效；「禁用」让该模型不再参与自动切换（标记为已禁用，排到末尾），「启用」恢复；区域限制（如 “not available in your country”）会自动触发这种禁用，需手动「启用」才恢复；
+- **供应商禁用**：「供应商状态」卡片上有「禁用」按钮，点后该供应商下所有模型都不再参与自动切换，对应卡片置灰；「启用」恢复；
+- 详细的每次切换记录保留在 `~/.config/magpie/free-switch/traces.jsonl`，可用 `cat` / 任意 JSONL 查看器阅读，不在控制台里展示。
 
 控制台端口在 `~/.config/magpie/free-switch/config.json` 的 `consolePort` 修改；端口被占用时会自动往后找 10 个端口。实际地址也会写进 Magpie 日志和供应商的 Usage 卡片。
 
@@ -138,6 +142,7 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
   "includeModels": [],
   "excludeModels": [],
   "freeProviders": [],
+  "preferredModels": [],
   "maxTries": 6,
   "refreshSeconds": 60,
   "cooldownSeconds": 60,
@@ -158,6 +163,7 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
 | `includeProviders` / `excludeProviders` | 只包含/排除某些 provider；空数组表示全部。 |
 | `includeModels` / `excludeModels` | 只包含/排除某些模型，同样支持通配和正则。 |
 | `freeProviders` | 强制把这些 provider 的模型视为免费（有些中转不返回 pricing）。 |
+| `preferredModels` | 偏好模型列表。勾选（或在配置里列出）的模型会优先被尝试，支持 provider id、完整 model id、`*` 通配或 `/正则/`。控制台里勾选会自动写入这里。 |
 | `maxTries` | 一个请求最多尝试几个模型，1–20。 |
 | `refreshSeconds` | 模型列表缓存时间，默认 60 秒；控制台“刷新模型”会立即刷新。 |
 | `cooldownSeconds` | 429 没有重置提示时的基础冷却秒数。 |
@@ -229,3 +235,10 @@ test/                  Node 内置测试
 ## License
 
 MIT
+
+## 更新日志
+
+### 0.2.0
+- 新增**禁用 / 启用供应商**与**禁用 / 启用模型**：在控制台一键禁用后，该供应商下所有模型（或单个模型）不再参与自动切换，卡片置灰、明确标「已禁用」；「启用」恢复。区域限制（如 “not available in your country”）会**自动禁用**该模型，需手动启用才恢复。禁用状态持久化在 `state.json`。
+- 新增**手动切换**：每个模型行有「切换」按钮，把该模型设为下一次 `free-switch/auto` 请求的强制目标（清空其冷却与失败计数并排到候选最前），对当前进行中的请求不生效，下一次请求即生效。
+- `free-switch/auto` 的 failover 现在跳过所有被禁用（模型级或供应商级）的模型。

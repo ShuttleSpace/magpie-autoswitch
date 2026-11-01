@@ -4,6 +4,7 @@ import {
   DEFAULT_CONFIG,
   cooldownActive,
   cooldownFor,
+  countryBlocked,
   discoverFreeModels,
   isFreeModel,
   modelProblem,
@@ -67,6 +68,49 @@ test("discovery keeps zero-priced rows, applies filters and priority", () => {
   assert.deepEqual(noZen.map((m) => m.id), ["workbuddy/hy3"]);
 });
 
+test("preferred models are tried first regardless of priority", () => {
+  const rows = [
+    free("workbuddy/hy3", "workbuddy"),
+    free("opencode-zen-free/b", "opencode-zen-free"),
+    free("opencode-zen-free/a", "opencode-zen-free"),
+    free("kilo/x", "kilo"),
+    free("cline/y", "cline"),
+  ];
+  const config = {
+    ...DEFAULT_CONFIG,
+    priority: ["opencode-zen-free", "kilo"],
+    preferredModels: ["cline/y", "workbuddy/hy3"],
+  };
+  const models = discoverFreeModels(rows, config);
+  const ids = models.map((m) => m.id);
+  // Preferred models should appear before non-preferred ones.
+  const firstPref = Math.min(...ids.filter((id) => config.preferredModels.includes(id)).map((id) => ids.indexOf(id)));
+  const firstNonPref = Math.min(...ids.filter((id) => !config.preferredModels.includes(id)).map((id) => ids.indexOf(id)));
+  assert.ok(firstPref < firstNonPref, "preferred models come first");
+  assert.deepEqual(
+    ids.filter((id) => config.preferredModels.includes(id)).sort(),
+    ["cline/y", "workbuddy/hy3"],
+    "all preferred models are present and first",
+  );
+});
+
+test("preferred provider pattern moves all matching models first", () => {
+  const rows = [
+    free("workbuddy/hy3", "workbuddy"),
+    free("opencode-zen-free/b", "opencode-zen-free"),
+    free("opencode-zen-free/a", "opencode-zen-free"),
+    free("kilo/x", "kilo"),
+  ];
+  const config = {
+    ...DEFAULT_CONFIG,
+    priority: ["opencode-zen-free"],
+    preferredModels: ["kilo"],
+  };
+  const models = discoverFreeModels(rows, config);
+  const ids = models.map((m) => m.id);
+  assert.equal(ids[0], "kilo/x", "preferred provider's model comes first");
+});
+
 test("awake models come first and keep their order; all cooling keeps order too", () => {
   const models = ["a", "b", "c"].map((id) => ({ id, provider: "p", toolcall: true, image: true, reasoning: true }));
   const now = 1_000_000;
@@ -85,6 +129,30 @@ test("awake models come first and keep their order; all cooling keeps order too"
 
   const awakeOnly = selectCandidates(models, state, {}, { ...DEFAULT_CONFIG, tryCooling: false }, now);
   assert.deepEqual(awakeOnly.ordered.map((m) => m.id), ["a"]);
+});
+
+test("disabled models and providers are excluded from the failover pool", () => {
+  const models = [
+    { id: "zen/a", provider: "zen", toolcall: true, image: true, reasoning: true },
+    { id: "kilo/b", provider: "kilo", toolcall: true, image: true, reasoning: true },
+    { id: "cline/c", provider: "cline", toolcall: true, image: true, reasoning: true },
+  ];
+  const now = 1_000_000;
+  // model-level disable
+  const withDisabled = { "kilo/b": { disabled: true, until: 0 } };
+  const r1 = selectCandidates(models, withDisabled, {}, DEFAULT_CONFIG, now);
+  assert.deepEqual(r1.ordered.map((m) => m.id), ["zen/a", "cline/c"], "disabled model skipped");
+  assert.equal(r1.skippedDisabled, 1);
+  // provider-level disable via the disabledProviders argument
+  const r2 = selectCandidates(models, {}, {}, DEFAULT_CONFIG, now, ["cline"]);
+  assert.deepEqual(r2.ordered.map((m) => m.id), ["zen/a", "kilo/b"], "disabled provider skipped");
+  assert.equal(r2.skippedDisabled, 1);
+  // a disabled model is excluded even if it would otherwise be cooling;
+  // a non-disabled cooling model still takes part in the failover
+  const cool = { "zen/a": { until: now + 50 } };
+  const r3 = selectCandidates(models, { ...withDisabled, ...cool }, {}, DEFAULT_CONFIG, now);
+  assert.deepEqual(r3.ordered.map((m) => m.id), ["cline/c", "zen/a"]);
+  assert.ok(!r3.ordered.some((m) => m.id === "kilo/b"), "disabled kilo/b still excluded while cooling");
 });
 
 test("capability requirements filter candidates, then relax if nothing fits", () => {
@@ -158,6 +226,41 @@ test("cooldownFor chooses the reset hint first, then a bounded backoff", () => {
 
   const modelBad = cooldownFor({ status: 400, headers: new Headers({}), bodyText: "model is not supported", now, config });
   assert.equal(modelBad.seconds, 600);
+});
+
+test("country-blocked responses are disabled for a long cooldown, not retried", () => {
+  const now = 1_700_000_000_000;
+  const config = { ...DEFAULT_CONFIG, countryBlockCooldownSeconds: 24 * 60 * 60, maxCooldownSeconds: 8 * 60 * 60 };
+  const cases = [
+    { status: 403, body: "This model is not available in your country" },
+    { status: 400, body: "The model is not available in your region." },
+    { status: 200, body: "geographic restriction: not accessible in your location" },
+    { status: 0, error: new Error("model not available in your country yet") },
+  ];
+  for (const c of cases) {
+    const cd = cooldownFor({ status: c.status, headers: new Headers({}), bodyText: c.body ?? "", error: c.error, now, config });
+    assert.ok(cd, `应识别区域限制 (${c.body || c.error?.message})`);
+    assert.equal(cd.reason, "区域不可用");
+    assert.equal(cd.seconds, 24 * 60 * 60, "区域限制使用长冷却 = 禁用");
+    assert.equal(cd.disabled, true, "区域限制同时标记 disabled，需手动启用才恢复");
+  }
+  // 普通 403 仍按登录拒绝处理，不被误判为区域限制
+  const plainAuth = cooldownFor({ status: 403, headers: new Headers({}), bodyText: "invalid api key", now, config });
+  assert.equal(plainAuth.reason, "sign-in refused");
+  // 区域限制优先于 429 之外的状态分支
+  const blockOverGone = cooldownFor({ status: 404, headers: new Headers({}), bodyText: "This model is not available in your country", now, config });
+  assert.equal(blockOverGone.reason, "区域不可用");
+});
+
+test("countryBlocked detects regional restrictions", () => {
+  assert.equal(countryBlocked("This model is not available in your country"), true);
+  assert.equal(countryBlocked("model not available in your region"), true);
+  assert.equal(countryBlocked("geographic restriction applied"), true);
+  assert.equal(countryBlocked("该模型在您所在国家不可用"), true);
+  assert.equal(countryBlocked("rate limit exceeded"), false);
+  assert.equal(countryBlocked("invalid api key"), false);
+  assert.equal(countryBlocked(404), false);
+  assert.equal(countryBlocked(), false);
 });
 
 test("request-shaped errors stop the failover; model and quota errors continue", () => {

@@ -5,6 +5,7 @@ import {
   cooldownFor,
   cooldownSummary,
   discoverFreeModels,
+  matchesModel,
   needsOf,
   selectCandidates,
   shouldStop,
@@ -263,6 +264,9 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     getState: () => getState(),
     refresh: (force) => discover(force),
     clearCooldown: (model) => clearCooldown(model),
+    disable: (body) => disableWith(body),
+    enable: (body) => enableWith(body),
+    switch: (body) => setManualSwitch(body?.model),
   });
 
   function effectiveConfig() {
@@ -320,6 +324,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       until: cooldown.until,
       reason: cooldown.reason,
       failures: cooldown.failures,
+      disabled: !!cooldown.disabled,
       lastStatus: status,
       lastError: error ? String(error).slice(0, 1000) : previous.lastError,
       lastAttemptAt: Date.now(),
@@ -340,6 +345,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       until: 0,
       reason: undefined,
       failures: 0,
+      disabled: false,
       lastStatus: status,
       lastError: undefined,
       lastSuccessAt: Date.now(),
@@ -423,8 +429,28 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
 
     const config = effectiveConfig();
     const needs = needsOf(body);
-    const selection = selectCandidates(models, state.models, needs, config);
-    if (!selection.ordered.length || ((needs.tools || needs.images || needs.reasoning) && selection.capable === 0)) {
+    const manual = state.manualSwitch && typeof state.manualSwitch.model === "string" ? state.manualSwitch : null;
+    let forced = null;
+    let forcedDisabled = false;
+    if (manual) {
+      forced = models.find((m) => m.id === manual.model || m.id.startsWith(`${manual.model}/`)) || null;
+      forcedDisabled = !!forced && !!(state.models[forced.id]?.disabled || (Array.isArray(state.disabledProviders) && state.disabledProviders.some((p) => matchesModel(forced, p))));
+      if (forced && !forcedDisabled) {
+        state.models[forced.id] = { ...(state.models[forced.id] ?? {}), until: 0, reason: undefined, failures: 0, disabled: false, lastAttemptAt: Date.now() };
+        try {
+          saveState(state);
+        } catch {
+          /* a read-only config directory must not break a request */
+        }
+      }
+      state.manualSwitch = null;
+    }
+    const selection = selectCandidates(models, state.models, needs, config, Date.now(), state.disabledProviders);
+    let ordered = selection.ordered;
+    if (forced && !forcedDisabled) {
+      ordered = [forced, ...ordered.filter((m) => m.id !== forced.id)];
+    }
+    if (!ordered.length || ((needs.tools || needs.images || needs.reasoning) && selection.capable === 0)) {
       trace.exhausted = true;
       trace.error = "no candidate for request capabilities";
       finishTrace(trace);
@@ -432,7 +458,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     }
 
     let last;
-    for (const candidate of selection.ordered) {
+    for (const candidate of ordered) {
       if (request.signal.aborted) {
         trace.aborted = true;
         break;
@@ -605,6 +631,90 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     );
   }
 
+  function disableModel(modelId) {
+    const id = typeof modelId === "string" ? modelId.trim() : "";
+    if (!id) return { ok: false, error: "missing model" };
+    const previous = state.models[id] ?? {};
+    state.models[id] = {
+      ...previous,
+      provider: previous.provider,
+      name: previous.name,
+      disabled: true,
+      until: 0,
+      reason: "手动禁用",
+      failures: previous.failures ?? 0,
+      lastAttemptAt: Date.now(),
+    };
+    try {
+      saveState(state);
+    } catch {
+      /* a read-only config directory must not break a request */
+    }
+    return { ok: true };
+  }
+
+  function enableModel(modelId) {
+    const id = typeof modelId === "string" ? modelId.trim() : "";
+    if (!id) return { ok: false, error: "missing model" };
+    // Clearing the entry clears the manual disable flag (and the cooldown).
+    clearCooldown(id);
+    return { ok: true };
+  }
+
+  function disableProvider(provider) {
+    const p = typeof provider === "string" ? provider.trim() : "";
+    if (!p) return { ok: false, error: "missing provider" };
+    const list = Array.isArray(state.disabledProviders) ? [...state.disabledProviders] : [];
+    if (!list.includes(p)) list.push(p);
+    state.disabledProviders = list;
+    try {
+      saveState(state);
+    } catch {
+      /* a read-only config directory must not break a request */
+    }
+    return { ok: true };
+  }
+
+  function enableProvider(provider) {
+    const p = typeof provider === "string" ? provider.trim() : "";
+    if (!p) return { ok: false, error: "missing provider" };
+    state.disabledProviders = (Array.isArray(state.disabledProviders) ? [...state.disabledProviders] : []).filter((x) => x !== p);
+    try {
+      saveState(state);
+    } catch {
+      /* a read-only config directory must not break a request */
+    }
+    return { ok: true };
+  }
+
+  async function disableWith(body = {}) {
+    const provider = typeof body?.provider === "string" ? body.provider.trim() : "";
+    const model = typeof body?.model === "string" ? body.model.trim() : "";
+    if (provider) return disableProvider(provider);
+    if (model) return disableModel(model);
+    return { ok: false, error: "missing model or provider" };
+  }
+
+  async function enableWith(body = {}) {
+    const provider = typeof body?.provider === "string" ? body.provider.trim() : "";
+    const model = typeof body?.model === "string" ? body.model.trim() : "";
+    if (provider) return enableProvider(provider);
+    if (model) return enableModel(model);
+    return { ok: false, error: "missing model or provider" };
+  }
+
+  function setManualSwitch(model) {
+    const m = typeof model === "string" ? model.trim() : "";
+    if (!m) return { ok: false, error: "missing model" };
+    state.manualSwitch = { model: m, at: Date.now() };
+    try {
+      saveState(state);
+    } catch {
+      /* a read-only config directory must not break a request */
+    }
+    return { ok: true };
+  }
+
   function clearCooldown(model) {
     if (model) delete state.models[model];
     else state.models = {};
@@ -630,15 +740,19 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     const models = cache.models.map((model) => {
       const entry = state.models[model.id] ?? {};
       const summary = cooldownSummary(entry, now);
+      const preferred = Array.isArray(config.preferredModels) && config.preferredModels.some((p) => matchesModel(model, p));
       return {
         id: model.id,
         provider: model.provider,
         name: model.name,
+        preferred,
         cooling: summary.cooling,
         until: summary.until,
         failures: entry.failures ?? 0,
         lastStatus: entry.lastStatus ?? null,
         lastError: entry.lastError ?? null,
+        reason: entry.reason ?? null,
+        disabled: !!entry.disabled || (Array.isArray(state.disabledProviders) && state.disabledProviders.some((p) => matchesModel(model, p))),
         lastSuccessAt: entry.lastSuccessAt ?? null,
         context: model.context,
         image: model.image,
@@ -658,11 +772,15 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         maxTries: config.maxTries,
         refreshSeconds: config.refreshSeconds,
         cooldownSeconds: config.cooldownSeconds,
+        countryBlockCooldownSeconds: config.countryBlockCooldownSeconds,
         tryCooling: config.tryCooling,
         priority: config.priority,
         includeProviders: config.includeProviders,
         excludeProviders: config.excludeProviders,
+        preferredModels: config.preferredModels,
       },
+      disabledProviders: Array.isArray(state.disabledProviders) ? [...state.disabledProviders] : [],
+      manualSwitch: state.manualSwitch ?? null,
       models,
       traces: traces.slice(-50).reverse(),
       activeModel: (() => {

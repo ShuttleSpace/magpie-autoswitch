@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createConsole } from "../src/console.mjs";
 import { gatewayAddress } from "../src/gateway.mjs";
+import { loadConfig } from "../src/config.mjs";
 import { createFreeSwitchPlugin } from "../src/plugin.mjs";
 
 function tmpdir() {
@@ -250,4 +251,100 @@ test("the console serves the page and its state on loopback", async () => {
   assert.equal((await state.json()).now, 123);
   await consoleServer.stop();
   assert.equal(consoleServer.running, false);
+});
+
+test("the preferred API toggles a model in config.json", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    const configFile = path.join(dir, "free-switch", "config.json");
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    fs.writeFileSync(configFile, JSON.stringify({ preferredModels: [] }));
+    const consoleServer = createConsole({
+      getState: async () => ({ now: 1, stats: {}, config: { preferredModels: loadConfig().preferredModels }, models: [{ id: "zen/a" }, { id: "zen/b" }], traces: [] }),
+      refresh: async () => {},
+      clearCooldown: async () => {},
+    });
+    const url = await consoleServer.start(0);
+    let res = await fetch(`${url}/api/preferred`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "zen/a" }),
+    });
+    assert.equal(res.status, 200);
+    let body = await res.json();
+    assert.deepEqual(body.config.preferredModels, ["zen/a"]);
+    let saved = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    assert.deepEqual(saved.preferredModels, ["zen/a"]);
+    // Toggle off
+    res = await fetch(`${url}/api/preferred`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "zen/a" }),
+    });
+    assert.equal(res.status, 200);
+    body = await res.json();
+    assert.deepEqual(body.config.preferredModels, []);
+    saved = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    assert.deepEqual(saved.preferredModels, []);
+    // Missing model field -> 400
+    res = await fetch(`${url}/api/preferred`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+    await consoleServer.stop();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("console disable / enable / switch endpoints route to the right handler", async () => {
+  const state = { models: {}, disabledProviders: [], manualSwitch: null, stats: {} };
+  const consoleServer = createConsole({
+    getState: async () => state,
+    refresh: async () => {},
+    clearCooldown: async () => {},
+    disable: async (body) => {
+      if (body?.provider) state.disabledProviders.push(body.provider);
+      return { ok: true };
+    },
+    enable: async (body) => {
+      if (body?.provider) state.disabledProviders = state.disabledProviders.filter((p) => p !== body.provider);
+      return { ok: true };
+    },
+    switch: async (model) => {
+      if (model) state.manualSwitch = { model, at: 1 };
+      return { ok: true };
+    },
+  });
+  const url = await consoleServer.start(0);
+  let res = await fetch(`${url}/api/disable`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider: "kilo" }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).disabledProviders.includes("kilo"), true);
+
+  res = await fetch(`${url}/api/enable`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider: "kilo" }),
+  });
+  assert.equal((await res.json()).disabledProviders.includes("kilo"), false);
+
+  res = await fetch(`${url}/api/switch`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "zen/a" }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).manualSwitch.model, "zen/a");
+
+  // unknown endpoint -> 404
+  res = await fetch(`${url}/api/nope`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(res.status, 404);
+  await consoleServer.stop();
 });

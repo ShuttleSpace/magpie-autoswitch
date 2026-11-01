@@ -48,6 +48,8 @@ function writeJSON(file, value) {
   }
 }
 
+export { writeJSON };
+
 function boolEnv(value) {
   if (value === undefined) return undefined;
   return /^(?:1|true|yes|on)$/i.test(String(value).trim());
@@ -82,7 +84,7 @@ export function loadConfig() {
   const file = configPath();
   const saved = readJSON(file, undefined);
   const config = { ...DEFAULT_CONFIG, ...(saved && typeof saved === "object" ? saved : {}) };
-  for (const key of ["priority", "includeProviders", "excludeProviders", "includeModels", "excludeModels", "freeProviders"]) {
+  for (const key of ["priority", "includeProviders", "excludeProviders", "includeModels", "excludeModels", "freeProviders", "preferredModels"]) {
     if (!Array.isArray(config[key])) config[key] = [...DEFAULT_CONFIG[key]];
     config[key] = config[key].filter((x) => typeof x === "string" && x.trim()).map((x) => x.trim());
   }
@@ -93,6 +95,7 @@ export function loadConfig() {
     "serverErrorCooldownSeconds",
     "authErrorCooldownSeconds",
     "modelGoneCooldownSeconds",
+    "countryBlockCooldownSeconds",
     "maxCooldownSeconds",
     "consolePort",
   ]) {
@@ -143,6 +146,12 @@ export function emptyState() {
     version: 1,
     updatedAt: Date.now(),
     models: {},
+    // Provider-level manual disables, e.g. ["kilo"]. A disabled provider never
+    // takes part in auto failover until it is enabled again.
+    disabledProviders: [],
+    // Manual switch target for the next auto request: { model, at }. Consumed
+    // by the next free-switch/auto call and cleared afterwards.
+    manualSwitch: null,
     stats: {
       requests: 0,
       attempts: 0,
@@ -159,6 +168,8 @@ export function loadState() {
   const state = emptyState();
   if (saved && typeof saved === "object") {
     if (saved.models && typeof saved.models === "object") state.models = saved.models;
+    if (Array.isArray(saved.disabledProviders)) state.disabledProviders = saved.disabledProviders.filter((x) => typeof x === "string" && x.trim());
+    if (saved.manualSwitch && typeof saved.manualSwitch === "object") state.manualSwitch = saved.manualSwitch;
     if (saved.stats && typeof saved.stats === "object") state.stats = { ...state.stats, ...saved.stats };
   }
   for (const key of Object.keys(state.stats)) {

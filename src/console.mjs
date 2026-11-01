@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import http from "node:http";
+import { loadConfig, configPath, writeJSON } from "./config.mjs";
 
 const PAGE = fs.readFileSync(new URL("./console.html", import.meta.url), "utf8");
 
@@ -47,7 +48,7 @@ async function readBody(req, max = 4096) {
 // A tiny loopback-only console. It is read-only except for refreshing the
 // catalog and clearing a cooldown, so it needs no token; it never listens on
 // anything but 127.0.0.1.
-export function createConsole({ getState, refresh, clearCooldown }) {
+export function createConsole({ getState, refresh, clearCooldown, disable, enable, switch: setManualSwitch }) {
   let server;
   let port = 0;
   let requestedPort = 0;
@@ -73,6 +74,40 @@ export function createConsole({ getState, refresh, clearCooldown }) {
       if (req.method === "POST" && url.pathname === "/api/clear") {
         const body = await readBody(req);
         await clearCooldown?.(typeof body?.model === "string" && body.model.trim() ? body.model.trim() : undefined);
+        return json(res, 200, await getState());
+      }
+      if (req.method === "POST" && url.pathname === "/api/disable") {
+        const body = await readBody(req);
+        const result = await disable?.(body);
+        const state = await getState();
+        return json(res, 200, { ...state, ok: result?.ok !== false });
+      }
+      if (req.method === "POST" && url.pathname === "/api/enable") {
+        const body = await readBody(req);
+        const result = await enable?.(body);
+        const state = await getState();
+        return json(res, 200, { ...state, ok: result?.ok !== false });
+      }
+      if (req.method === "POST" && url.pathname === "/api/switch") {
+        const body = await readBody(req);
+        const result = await setManualSwitch?.(body?.model);
+        const state = await getState();
+        return json(res, 200, { ...state, ok: result?.ok !== false });
+      }
+      if (req.method === "POST" && url.pathname === "/api/preferred") {
+        const body = await readBody(req);
+        const modelId = typeof body?.model === "string" && body.model.trim() ? body.model.trim() : undefined;
+        if (!modelId) return json(res, 400, { error: "missing model field" });
+        const config = loadConfig();
+        const preferredModels = Array.isArray(config.preferredModels) ? [...config.preferredModels] : [];
+        const index = preferredModels.indexOf(modelId);
+        if (index >= 0) {
+          preferredModels.splice(index, 1);
+        } else {
+          preferredModels.push(modelId);
+        }
+        config.preferredModels = preferredModels;
+        writeJSON(configPath(), config);
         return json(res, 200, await getState());
       }
       return json(res, 404, { error: "not found" });

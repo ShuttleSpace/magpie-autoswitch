@@ -24,12 +24,17 @@ export const DEFAULT_CONFIG = {
   // A provider listed here is treated as free even if its /v1/models row has
   // no zero pricing (some relays omit the field).
   freeProviders: [],
+  // 优先级（偏好模型）：检查后，优先使用这些模型，尽管它们在优先级数组中靠后。
+  preferredModels: [],
   maxTries: 6,
   refreshSeconds: 60,
   cooldownSeconds: 60,
   serverErrorCooldownSeconds: 30,
   authErrorCooldownSeconds: 300,
   modelGoneCooldownSeconds: 600,
+  // 区域限制（如 “This model is not available in your country”）：直接禁用该
+  // 模型并移到末尾，除非用户在控制台手动清除冷却重新启用。
+  countryBlockCooldownSeconds: 24 * 60 * 60,
   maxCooldownSeconds: 8 * 60 * 60,
   // After every awake model failed, still try the cooling ones. The request
   // then either succeeds or comes back with a useful error instead of a
@@ -163,6 +168,7 @@ export function discoverFreeModels(rows, config = DEFAULT_CONFIG) {
   const excludeProviders = Array.isArray(config.excludeProviders) ? config.excludeProviders : [];
   const includeModels = Array.isArray(config.includeModels) ? config.includeModels : [];
   const excludeModels = Array.isArray(config.excludeModels) ? config.excludeModels : [];
+  const preferredModels = Array.isArray(config.preferredModels) ? config.preferredModels : [];
   const seen = new Set();
   const out = [];
   for (const row of rows) {
@@ -192,6 +198,26 @@ export function discoverFreeModels(rows, config = DEFAULT_CONFIG) {
     }
   }
   out.sort((a, b) => {
+    const ar = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const br = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    if (ar !== br) return ar - br;
+    const ap = a.provider.localeCompare(b.provider);
+    if (ap !== 0) return ap;
+    return a.id.localeCompare(b.id);
+  });
+  // Apply preferred models priority: preferred models come first
+  const preferredSet = new Set();
+  for (const pattern of preferredModels) {
+    for (const model of out) {
+      if (matchesModel(model, pattern)) {
+        preferredSet.add(model.id);
+      }
+    }
+  }
+  out.sort((a, b) => {
+    const aPref = preferredSet.has(a.id) ? 0 : 1;
+    const bPref = preferredSet.has(b.id) ? 0 : 1;
+    if (aPref !== bPref) return aPref - bPref;
     const ar = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
     const br = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
     if (ar !== br) return ar - br;
@@ -268,10 +294,18 @@ export function supports(model, needs) {
 // Awake models keep their configured order and always come first. When none
 // are awake, the cooling models are tried in that same order: that is the
 // "call in order to confirm" path.
-export function selectCandidates(models, stateModels, needs, config = DEFAULT_CONFIG, now = Date.now()) {
+export function selectCandidates(models, stateModels, needs, config = DEFAULT_CONFIG, now = Date.now(), disabledProviders = []) {
   const all = Array.isArray(models) ? models : [];
-  const capable = all.filter((m) => supports(m, needs));
-  const pool = capable.length ? capable : all;
+  const isDisabled = (m) => {
+    const entry = stateModels?.[m.id];
+    if (entry?.disabled) return true;
+    const providers = Array.isArray(disabledProviders) ? disabledProviders : [];
+    if (!providers.length) return false;
+    return providers.some((p) => matchesModel(m, p));
+  };
+  const enabled = all.filter((m) => !isDisabled(m));
+  const capable = enabled.filter((m) => supports(m, needs));
+  const pool = capable.length ? capable : enabled;
   const awake = pool.filter((m) => !cooldownActive(stateModels?.[m.id], now));
   const cooling = pool.filter((m) => cooldownActive(stateModels?.[m.id], now));
   const max = Math.max(1, Math.min(20, Math.trunc(Number(config.maxTries) || 6)));
@@ -284,6 +318,7 @@ export function selectCandidates(models, stateModels, needs, config = DEFAULT_CO
     cooling: cooling.length,
     capable: capable.length,
     total: pool.length,
+    skippedDisabled: all.length - enabled.length,
   };
 }
 
@@ -393,6 +428,17 @@ export function modelProblem(bodyText) {
   return namesModel && refuses;
 }
 
+// 区域限制：模型在你的国家/地区不可用。这类错误不是限流也不是账号问题，
+// 重试也不会恢复，所以直接禁用该模型（长冷却），而不是反复尝试。
+const COUNTRY_BLOCK = /(?:this\s+)?(?:model|it)\s+(?:is\s+)?not\s+available\s+in\s+(?:your\s+)?(?:country|region|location)|not\s+available\s+in\s+(?:your\s+)?(?:country|region|location)|not\s+supported\s+in\s+(?:your\s+)?(?:country|region)|(?:your\s+)?(?:country|region)\s+(?:is\s+)?not\s+supported|geographic(?:al)?\s+restriction|not\s+accessible\s+in\s+(?:your\s+)?(?:country|region)|该模型[^"]*?(?:国家|地区)[^"]*?(?:不可用|不支持|受限|限制)|(?:国家|地区)[^"]*?(?:不可用|不支持|受限|限制)/i;
+
+export function countryBlocked(...texts) {
+  for (const t of texts) {
+    if (typeof t === "string" && t && COUNTRY_BLOCK.test(t)) return true;
+  }
+  return false;
+}
+
 export function shouldStop(status, bodyText) {
   // A request-shaped 400/422 is the caller's, not another model's, problem.
   if (status === 400 || status === 422) return !modelProblem(bodyText);
@@ -410,6 +456,12 @@ export function cooldownFor({ status, headers, bodyText, error, previousFailures
     const ms = Math.min(maxMs, Math.max(1000, (Number(seconds) || 30) * 1000 * 2 ** Math.min(failures - 1, 6)));
     return { until: now + ms, seconds: Math.ceil(ms / 1000), reason, failures };
   };
+  if (countryBlocked(bodyText, error?.message)) {
+    // 区域限制是持久性“不可用”，用独立的禁用时长（不受 maxCooldownSeconds 上限约束），
+    // 默认 24h；用户可在控制台手动清除冷却立即重新启用。
+    const ms = Math.max(1000, (Number(config.countryBlockCooldownSeconds) || 24 * 60 * 60) * 1000);
+    return { until: now + ms, seconds: Math.ceil(ms / 1000), reason: "区域不可用", failures, disabled: true };
+  }
   if (status === 429) {
     const reset = parseReset(headers, bodyText, now, maxMs);
     if (reset) return { ...reset, reason: reset.source || "rate limit", failures };

@@ -231,6 +231,23 @@ export function discoverFreeModels(rows, config = DEFAULT_CONFIG) {
   return config.diversifyProviders === false ? out : roundRobinByProvider(out);
 }
 
+// The console-side display uses a full model directory: paid providers'
+// models should also be viewable, marked with a free flag. Failover candidate selection still
+// goes through discoverFreeModels, which only keeps free models.
+export function buildModelCatalog(rows, config = DEFAULT_CONFIG) {
+  if (!Array.isArray(rows)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const model = normalizeModel(row);
+    if (!model || seen.has(model.id)) continue;
+    seen.add(model.id);
+    out.push({ ...model, free: isFreeModel(row, config) });
+  }
+  out.sort((a, b) => (a.provider.localeCompare(b.provider)) || a.id.localeCompare(b.id));
+  return out;
+}
+
 export function roundRobinByProvider(models) {
   const buckets = new Map();
   const order = [];

@@ -6,6 +6,7 @@ import {
   cooldownFor,
   cooldownSummary,
   discoverFreeModels,
+  buildModelCatalog,
   matchesModel,
   needsOf,
   selectCandidates,
@@ -253,7 +254,7 @@ async function peekStream(response) {
 export async function createFreeSwitchPlugin(input = {}, _options = {}) {
   const state = loadState();
   const traces = readTraces(100);
-  let cache = { models: [], at: 0, error: undefined };
+  let cache = { models: [], catalog: [], at: 0, error: undefined };
   let discovery;
   let lastLoggedCount = -1;
   let consoleTimer;
@@ -295,7 +296,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       try {
         const rows = await fetchModelRows(signal);
         const models = discoverFreeModels(rows, config);
-        cache = { models, at: Date.now(), error: undefined };
+        const catalog = buildModelCatalog(rows, config);
+        cache = { models, catalog, at: Date.now(), error: undefined };
         if (models.length !== lastLoggedCount) {
           lastLoggedCount = models.length;
           log(input, "info", `discovered ${models.length} free model${models.length === 1 ? "" : "s"}`);
@@ -788,6 +790,23 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       })(),
       credits: readCredits(),
       models,
+      catalog: (cache.catalog ?? []).map((model) => {
+        const free = models.find((m) => m.id === model.id);
+        return {
+          id: model.id,
+          provider: model.provider,
+          name: model.name,
+          free: !!model.free,
+          cooling: free ? free.cooling : false,
+          until: free ? free.until : 0,
+          failures: free ? free.failures : 0,
+          lastStatus: free ? free.lastStatus : null,
+          lastStatusAt: free ? free.lastSuccessAt : null,
+          lastError: free ? free.lastError : null,
+          disabled: free ? free.disabled : false,
+          preferred: free ? free.preferred : false,
+        };
+      }),
       traces: traces.slice(-50).reverse(),
       activeModel: (() => {
         for (let i = traces.length - 1; i >= 0; i--) {

@@ -4,6 +4,7 @@ import {
   DEFAULT_CONFIG,
   cooldownActive,
   cooldownFor,
+  buildModelCatalog,
   countryBlocked,
   discoverFreeModels,
   isFreeModel,
@@ -33,6 +34,19 @@ test("a model is free only when both directions are priced at zero", () => {
   assert.equal(isFreeModel({ id: "empty/a", pricing: { prompt: "", completion: "" } }), false, "empty pricing is unknown, not zero");
   assert.equal(isFreeModel({ id: "free/a" }), true, "a name with free and no pricing is the narrow fallback");
   assert.equal(isFreeModel({ id: "x/a", pricing: { prompt: 0, completion: 0 }, type: "embedding" }), true, "pricing decides; type is filtered later");
+});
+
+test("buildModelCatalog keeps all providers with a free flag, paid included", () => {
+  const rows = [
+    free("zen/a"),
+    { id: "codearts/glm-5.3", pricing: { prompt: "0.000001", completion: "0.000002" } },
+    free("zen/b"),
+    { id: "free-switch/auto" },
+  ];
+  const catalog = buildModelCatalog(rows);
+  assert.deepEqual(catalog.map((m) => m.id), ["codearts/glm-5.3", "zen/a", "zen/b"], "sorted by provider");
+  assert.equal(catalog[0].free, false, "paid models stay in the catalog with free=false");
+  assert.equal(catalog[1].free, true);
 });
 
 test("groups, self models and non-chat rows are not candidates", () => {

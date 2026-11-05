@@ -1,6 +1,6 @@
 {
   "name": "magpie-free-switch",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Free Switch for Magpie: one model that automatically fails over across the free models of every enabled provider, remembers each model's rate-limit wake-up, and traces every switch in a local web console",
   "type": "module",
   "main": "./index.mjs",

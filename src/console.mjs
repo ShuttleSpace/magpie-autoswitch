@@ -94,6 +94,31 @@ export function createConsole({ getState, refresh, clearCooldown, disable, enabl
         const state = await getState();
         return json(res, 200, { ...state, ok: result?.ok !== false });
       }
+      if (req.method === "POST" && url.pathname === "/api/providers") {
+        const body = await readBody(req);
+        const incoming = Array.isArray(body?.providers) ? body.providers : [];
+        const config = loadConfig();
+        const set = new Set();
+        for (const p of incoming) {
+          const value = typeof p === "string" ? p.trim() : "";
+          if (value && !set.has(value)) set.add(value);
+        }
+        config.includeProviders = [...set];
+        writeJSON(configPath(), config);
+        const next = await getState();
+        next.lastAction = { at: Date.now(), kind: "providers", providers: config.includeProviders };
+        return json(res, 200, next);
+      }
+      if (req.method === "POST" && url.pathname === "/api/provider") {
+        const body = await readBody(req);
+        const provider = typeof body?.provider === "string" ? body.provider.trim() : "";
+        const config = loadConfig();
+        config.includeProviders = provider ? [provider] : [];
+        writeJSON(configPath(), config);
+        const next = await getState();
+        next.lastAction = { at: Date.now(), kind: "provider", provider: provider || null };
+        return json(res, 200, next);
+      }
       if (req.method === "POST" && url.pathname === "/api/preferred") {
         const body = await readBody(req);
         const modelId = typeof body?.model === "string" && body.model.trim() ? body.model.trim() : undefined;

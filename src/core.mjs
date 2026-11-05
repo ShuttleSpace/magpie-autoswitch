@@ -5,6 +5,9 @@
 export const PROVIDER = "free-switch";
 export const SELF_PROVIDERS = new Set([PROVIDER, `${PROVIDER}-plugin`]);
 
+// Bump alongside RELEASE_NOTES.md when shipping a change.
+export const VERSION = "0.3.0";
+
 export const DEFAULT_CONFIG = {
   // The order providers (or full model ids) are tried in. Anything left over
   // follows alphabetically by provider and then by model id.

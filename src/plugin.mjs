@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import {
   PROVIDER,
+  VERSION,
   cooldownFor,
   cooldownSummary,
   discoverFreeModels,
@@ -10,7 +11,7 @@ import {
   selectCandidates,
   shouldStop,
 } from "./core.mjs";
-import { appendTrace, configPath, loadConfig, loadState, readTraces, saveState, STATE_MAX_AGE } from "./config.mjs";
+import { appendTrace, configPath, loadConfig, loadState, readAllProviders, readCredits, readTraces, saveState, STATE_MAX_AGE } from "./config.mjs";
 import { fetchModelRows, gatewayAddress, postChat, readLimited } from "./gateway.mjs";
 import { createConsole } from "./console.mjs";
 
@@ -763,6 +764,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     return {
       now,
       gateway: gatewayAddress(),
+      version: VERSION,
       configFile: configPath(),
       discoveredAt: cache.at || null,
       discoveryError: cache.error ?? null,
@@ -781,6 +783,10 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       },
       disabledProviders: Array.isArray(state.disabledProviders) ? [...state.disabledProviders] : [],
       manualSwitch: state.manualSwitch ?? null,
+      allProviders: (() => {
+        try { return readAllProviders(); } catch { return []; }
+      })(),
+      credits: readCredits(),
       models,
       traces: traces.slice(-50).reverse(),
       activeModel: (() => {

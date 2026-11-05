@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG } from "./core.mjs";
 
 const TRACE_MAX_BYTES = 2 * 1024 * 1024;
 const TRACE_KEEP_LINES = 1000;
+const SELF_PROVIDERS = new Set(["free-switch", "free-switch-plugin"]);
 export const STATE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 
 export function magpieConfigDir() {
@@ -23,6 +24,56 @@ export function dataDir() {
 export const configPath = () => path.join(dataDir(), "config.json");
 export const statePath = () => path.join(dataDir(), "state.json");
 export const tracePath = () => path.join(dataDir(), "traces.jsonl");
+
+// Magpie-side credit snapshot: read quota balances + daily credit usage from
+// the magpie config dir so the console can show which providers run on credits.
+export function readAllProviders() {
+  const dir = magpieConfigDir();
+  const parsed = readJSON(path.join(dir, "providers.json"), undefined);
+  const list = parsed?.providers;
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((p) => (typeof p === "string" ? { id: p } : { id: p?.id, name: p?.name ?? p?.id }))
+    .filter((p) => p.id && !SELF_PROVIDERS.has(p.id));
+}
+
+export function readCredits() {
+  const dir = magpieConfigDir();
+  const quotas = readJSON(path.join(dir, "quotas.json"), {});
+  const daily = readJSON(path.join(dir, "credits-daily.json"), {});
+  const byId = new Map();
+  const add = (providerId, entry) => {
+    if (!providerId) return;
+    const prev = byId.get(providerId) ?? {};
+    byId.set(providerId, {
+      provider: entry.provider ?? providerId,
+      name: entry.name ?? providerId,
+      icon: entry.icon,
+      plan: entry.plan,
+      accessSku: entry.accessSku,
+      balance: entry.balance,
+      used: entry.used,
+      total: entry.total,
+      windows: Array.isArray(entry.windows) ? entry.windows : [],
+    });
+  };
+  for (const key of Object.keys(quotas ?? {})) {
+    const q = quotas[key];
+    const entry = q?.quota;
+    if (!entry) continue;
+    add(entry.provider, entry);
+  }
+  for (const key of Object.keys(daily ?? {})) {
+    const parts = key.split("|");
+    const providerId = parts[0];
+    const entry = daily[key];
+    const last = entry?.last;
+    if (!providerId || !last) continue;
+    add(providerId, { provider: providerId, name: providerId, used: last.used, total: last.total, since: entry?.since });
+  }
+  return [...byId.values()];
+}
+
 
 function ensureDir() {
   fs.mkdirSync(dataDir(), { recursive: true, mode: 0o700 });

@@ -141,7 +141,6 @@
   .stat.accent .v { color: var(--amber); }
   .stat.teal .v { color: var(--teal); }
   .stat.red .v { color: var(--red); }
-  .grid { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
   .panel { overflow: hidden; }
   .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
   .panel-title { font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
@@ -149,37 +148,6 @@
   .panel-body { padding: 14px 16px 16px; }
   .models-body { max-height: 640px; overflow: auto; }
 
-  /* ---- 供应商状态监控 ---- */
-  .prov-status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
-  .prov-status-card {
-    display: flex; align-items: center; gap: 12px; padding: 12px 14px;
-    border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2);
-    transition: border-color .16s ease, background .16s ease;
-  }
-  .prov-status-card:hover { border-color: var(--line-strong); }
-  .prov-status-card .picon {
-    width: 38px; height: 38px; border-radius: 10px; flex: 0 0 auto;
-    display: grid; place-items: center; font-size: 18px;
-    background: rgba(148,163,184,0.10); border: 1px solid var(--line);
-  }
-  .prov-status-card.healthy .picon { background: rgba(126,231,135,0.12); border-color: rgba(126,231,135,0.30); }
-  .prov-status-card.degraded .picon { background: rgba(255,180,84,0.12); border-color: rgba(255,180,84,0.30); }
-  .prov-status-card.down .picon { background: rgba(255,107,107,0.12); border-color: rgba(255,107,107,0.30); }
-  .prov-status-card .pname { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; font-weight: 600; color: var(--ink); word-break: break-all; }
-  .prov-status-card .pstat { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
-  .prov-status-card .pright { margin-left: auto; text-align: right; }
-  .prov-status-card .pcount { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
-  .prov-status-card.healthy .pcount { color: var(--green); }
-  .prov-status-card.degraded .pcount { color: var(--amber); }
-  .prov-status-card.down .pcount { color: var(--red); }
-  .prov-status-card .pcount small { font-size: 11px; color: var(--muted); font-weight: 500; }
-  .prov-bar { width: 60px; height: 5px; border-radius: 3px; background: rgba(148,163,184,0.18); overflow: hidden; }
-  .prov-bar > span { display: block; height: 100%; border-radius: 3px; transition: width .3s ease; }
-  .prov-status-card.healthy .prov-bar > span { background: var(--green); }
-  .prov-status-card.degraded .prov-bar > span { background: var(--amber); }
-  .prov-status-card.down .prov-bar > span { background: var(--red); }
-  .prov-status-card.disabled { opacity: 0.55; border-style: dashed; }
-  .prov-status-empty { padding: 22px 8px; text-align: center; color: var(--dim); font-size: 13px; }
   .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   input[type="search"] {
     font: inherit; color: var(--ink); width: 180px;
@@ -197,15 +165,7 @@
   select.select:focus { border-color: rgba(94,234,212,0.55); }
   .tree-head { display: grid; grid-template-columns: 88px 1fr 110px 80px 46px 60px; gap: 10px; padding: 0 10px 9px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; }
   .tree { display: flex; flex-direction: column; }
-  .prov-group { border-bottom: 1px solid rgba(148,163,184,0.07); }
-  .prov-group:last-child { border-bottom: 0; }
-  .prov-head { display: flex; align-items: center; gap: 9px; padding: 9px 10px; cursor: pointer; user-select: none; position: sticky; top: 0; background: var(--panel); z-index: 1; }
-  .prov-head:hover { background: rgba(148,163,184,0.05); }
-  .prov-head .caret { color: var(--dim); width: 12px; display: inline-block; transition: transform 0.15s ease; }
-  .prov-group.collapsed .caret { transform: rotate(-90deg); }
   .prov-name { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; font-weight: 600; color: var(--ink); }
-  .prov-meta { font-size: 11.5px; }
-  .prov-body { padding: 2px 0 6px; }
   .model-row { display: grid; grid-template-columns: 96px 1fr 100px 84px 46px 210px; gap: 10px; align-items: center; padding: 9px 10px; border-radius: 8px; }
   .model-row:hover { background: rgba(148,163,184,0.04); }
   .model-row.active { background: rgba(94,234,212,0.08); box-shadow: inset 3px 0 0 var(--teal); }
@@ -233,6 +193,8 @@
   .tag.cooling { color: var(--amber); border-color: rgba(255,180,84,0.28); background: rgba(255,180,84,0.07); }
   .tag.err { color: var(--red); border-color: rgba(255,107,107,0.28); background: rgba(255,107,107,0.07); }
   .tag.blocked { color: var(--dim); border-color: rgba(148,163,184,0.30); background: rgba(148,163,184,0.08); text-decoration: line-through; }
+  .tag.free { color: var(--teal); border-color: rgba(94,234,212,0.34); background: rgba(94,234,212,0.08); }
+  .tag.paid { color: var(--amber); border-color: rgba(255,180,84,0.34); background: rgba(255,180,84,0.08); }
   .muted { color: var(--muted); }
   .dim { color: var(--dim); }
   .mono { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
@@ -244,8 +206,8 @@
   footer code { color: var(--muted); }
   @media (max-width: 920px) {
     .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .grid { grid-template-columns: 1fr; }
-    .prov-status-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+    .grid2 { grid-template-columns: 1fr; }
+    .splitter { display: none; }
   }
   @media (max-width: 560px) {
     .shell { width: calc(100% - 24px); padding-top: 20px; }
@@ -254,6 +216,53 @@
     .stat .v { font-size: 23px; }
     input[type="search"] { width: 100%; }
   }
+
+  /* ---- 供应商 / 模型 双栏 + 可拖拽分隔 ---- */
+  .grid2 { display: grid; grid-template-columns: var(--prov-w, 34%) 8px 1fr; align-items: stretch; min-height: 540px; }
+  .pane { display: flex; flex-direction: column; min-width: 0; }
+  .pane-providers { min-width: 0; }
+  .pane-models { min-width: 0; }
+  .splitter { width: 8px; cursor: col-resize; background: linear-gradient(var(--line), var(--line)); border-radius: 4px; align-self: stretch; transition: background .15s ease; }
+  .splitter:hover, .splitter.dragging { background: var(--amber); }
+  .pane-scroll, .models-body { max-height: 560px; overflow-y: auto; }
+  .prov-list { display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
+  .prov-item {
+    display: flex; align-items: center; gap: 9px;
+    padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2);
+    cursor: pointer; transition: border-color .15s ease, background .15s ease;
+  }
+  .prov-item:hover { border-color: var(--line-strong); }
+  .prov-item.selected { border-color: rgba(94,234,212,0.60); background: rgba(94,234,212,0.16); box-shadow: inset 3px 0 0 rgba(94,234,212,0.60); }
+  .prov-item.has-credits { border-color: rgba(94,234,212,0.30); }
+  .prov-item .prov-ic { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; font-size: 14px; background: rgba(148,163,184,0.10); border: 1px solid var(--line); flex: 0 0 auto; }
+  .prov-item.has-credits .prov-ic { background: rgba(94,234,212,0.12); border-color: rgba(94,234,212,0.30); }
+  .prov-item .prov-name { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; font-weight: 600; color: var(--ink); flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prov-item.has-credits .prov-name { color: var(--teal); }
+  .prov-item .prov-sub { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prov-item .prov-sub .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
+  .prov-item.healthy .prov-sub .dot { background: var(--green); }
+  .prov-item.degraded .prov-sub .dot { background: var(--amber); }
+  .prov-item.down .prov-sub .dot { background: var(--red); }
+  .prov-item .prov-credit { flex: 0 0 auto; max-width: 150px; font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prov-item .prov-credit b { color: var(--teal); font-weight: 600; }
+  .prov-item .prov-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+
+  /* ---- 选择提供商 dialog ---- */
+  #prov-dialog { border: 1px solid var(--line-strong); border-radius: 12px; padding: 0; max-width: 520px; width: calc(100vw - 48px); max-height: min(72vh, 560px); box-shadow: 0 18px 60px rgba(0,0,0,0.35); color: var(--ink); background: var(--panel); }
+  #prov-dialog::backdrop { background: rgba(2,6,23,0.55); backdrop-filter: blur(2px); }
+  .dlg-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .dlg-body { padding: 12px 16px 16px; overflow-y: auto; max-height: calc(min(72vh, 560px) - 58px); }
+  .dlg-list { display: flex; flex-direction: column; gap: 6px; }
+  .dlg-item { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2); transition: border-color .15s ease, background .15s ease; }
+  .dlg-item:hover { border-color: var(--line-strong); }
+  .dlg-item.selected { border-color: rgba(94,234,212,0.60); background: rgba(94,234,212,0.16); box-shadow: inset 3px 0 0 rgba(94,234,212,0.60); }
+  .dlg-item .prov-chip-check { width: 16px; height: 16px; cursor: pointer; accent-color: var(--teal); flex: 0 0 auto; }
+  .dlg-item .chip-ic { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; font-size: 13px; background: rgba(148,163,184,0.10); border: 1px solid var(--line); flex: 0 0 auto; }
+  .dlg-item.selected .chip-ic { background: rgba(94,234,212,0.15); border-color: rgba(94,234,212,0.35); }
+  .dlg-item .chip-name { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; font-weight: 600; word-break: break-all; flex: 1; min-width: 0; }
+  .dlg-item .chip-credit { color: var(--muted); font-size: 11px; }
+  .dlg-item .chip-credit b { color: var(--teal); font-weight: 600; }
+  .dlg-item .chip-credit-wrap { display: flex; gap: 8px; align-items: center; margin-left: auto; flex: 0 0 auto; }
 </style>
 </head>
 <body>
@@ -275,6 +284,7 @@
     <div class="head-right">
       <span class="pill"><span id="health-dot" class="dot"></span><span id="health-text">连接中</span></span>
       <button id="theme-toggle" class="ghost" type="button" title="切换主题">🌓</button>
+      <button id="prov-picker-btn" class="ghost" type="button" title="选择哪些供应商参与免费模型自动切换">选择提供商</button>
       <button id="refresh" class="ghost" type="button">刷新模型</button>
       <button id="clear" class="ghost danger" type="button">清空冷却</button>
     </div>
@@ -299,34 +309,28 @@
     <div class="card stat"><div class="k">Cooling</div><div class="v" id="s-cooling">0 <small id="s-awake"></small></div></div>
   </section>
 
-  <div class="grid">
-    <section class="card panel">
+  <div class="grid2" id="grid2">
+    <section class="card panel pane pane-providers">
       <div class="panel-head">
-        <div class="panel-title"><strong>供应商状态</strong> <span id="prov-count" class="dim"></span></div>
-        <div class="toolbar">
-          <select id="prov-filter" class="select" title="筛选供应商">
-            <option value="all">全部</option>
-            <option value="healthy">仅正常</option>
-            <option value="degraded">仅降级</option>
-            <option value="down">仅不可用</option>
-          </select>
-        </div>
+        <div class="panel-title"><strong>已选提供商</strong> <span id="sel-count" class="dim"></span></div>
       </div>
-      <div class="panel-body">
-        <div id="prov-status" class="prov-status-grid"></div>
-        <div id="prov-status-empty" class="prov-status-empty" hidden>暂无供应商数据。</div>
+      <div class="panel-body pane-scroll">
+        <div id="sel-prov-list" class="prov-list"></div>
+        <div id="sel-prov-empty" class="empty" hidden>暂无已选提供商。在上面勾选后这里会显示它们的状态。</div>
       </div>
     </section>
-    <section class="card panel">
+    <div class="splitter" id="splitter" title="拖拽调整左右宽度"></div>
+    <section class="card panel pane pane-models">
       <div class="panel-head">
-        <div class="panel-title"><strong>免费模型</strong> <span id="model-count" class="dim"></span></div>
+        <div class="panel-title"><strong>模型</strong> <span id="model-count" class="dim"></span></div>
         <div class="toolbar">
           <select id="sort" class="select" title="排序方式">
+            <option value="priority">优先级</option>
             <option value="wake">苏醒时间</option>
             <option value="name">按名称</option>
             <option value="cooling">冷却优先</option>
           </select>
-          <input id="filter" type="search" placeholder="过滤模型 / 提供商" autocomplete="off">
+          <input id="filter" type="search" placeholder="过滤模型 / 供应商" autocomplete="off">
         </div>
       </div>
       <div class="panel-body models-body">
@@ -337,8 +341,23 @@
     </section>
   </div>
 
+  <dialog id="prov-dialog">
+    <div class="dlg-head">
+      <div class="panel-title"><strong>选择提供商</strong> <span id="prov-count" class="dim"></span></div>
+      <div class="toolbar">
+        <input id="prov-search" type="search" placeholder="过滤提供商" autocomplete="off">
+        <button id="prov-dialog-close" class="ghost" type="button">关闭</button>
+      </div>
+    </div>
+    <div class="dlg-body">
+      <div id="dlg-prov-list" class="dlg-list"></div>
+      <div id="dlg-prov-empty" class="empty" hidden>没有匹配的提供商。</div>
+    </div>
+  </dialog>
+
   <footer>
     <div>Gateway <code id="gateway">—</code></div>
+    <div>版本 <code id="version">—</code></div>
     <div>配置 <code id="config-path">—</code></div>
     <div>只监听 127.0.0.1 · 每 2 秒自动刷新</div>
   </footer>
@@ -348,10 +367,10 @@
   "use strict";
   var state = null;
   var filter = "";
+  var provSearch = "";
+  var provFocus = "";
   var loading = false;
-  var collapsedProviders = new Set();
-  var sortMode = "wake";
-  var provFilter = "all";
+  var sortMode = "priority";
 
   // ---- 主题：跟随系统，手动可覆盖 ----
   var THEME_KEY = "free-switch-theme";
@@ -453,7 +472,7 @@
       ? '<button class="ghost ok" data-enable="' + esc(m.id) + '" type="button">启用</button>'
       : '<button class="ghost danger" data-disable="' + esc(m.id) + '" type="button">禁用</button>';
     return '<div class="model-row' + (isActive ? " active" : "") + (m.disabled ? " disabled" : "") + '" data-model="' + esc(m.id) + '">' +
-      '<div class="mr-status">' + tag + preferredTag + "</div>" +
+      '<div class="mr-status">' + tag + preferredTag + '<span class="tag free" title="Free Switch 仅托管免费模型">免费</span></div>' +
       '<div class="mr-model"><div class="id">' + esc(m.id) + "</div>" + name + err + "</div>" +
       '<div class="mr-cool">' + coolCell + "</div>" +
       '<div class="mr-last">' + last + ' <span class="dim mono">' + (m.lastSuccessAt ? clock(m.lastSuccessAt) : "—") + "</span></div>" +
@@ -461,104 +480,111 @@
       '<div class="mr-action"><label class="pref-label" title="勾选后优先使用该模型">' + prefCheck + '</label>' + switchBtn + '<button class="ghost" data-clear="' + esc(m.id) + '" type="button">清除</button>' + toggleBtn + "</div>" +
       "</div>";
   }
-  function providerStatus(models) {
-    var groups = {};
-    models.forEach(function (m) {
-      var p = m.provider || "—";
-      if (!groups[p]) groups[p] = { total: 0, awake: 0, cooling: 0, blocked: 0, failures: 0, preferred: 0 };
-      groups[p].total++;
-      if (m.cooling) {
-        groups[p].cooling++;
-        if (m.reason) groups[p].blocked++;
-      } else {
-        groups[p].awake++;
-      }
-      groups[p].failures += m.failures || 0;
-      if (m.preferred) groups[p].preferred++;
-    });
-    return groups;
-  }
   function provIcon(provider) {
     var seed = 0;
     for (var i = 0; i < provider.length; i++) seed = (seed * 31 + provider.charCodeAt(i)) >>> 0;
     var emojis = ["🚀", "⚡", "🧠", "🔮", "🌟", "🔥", "💡", "⚡", "⚡", "⚡", "⚡", "⚡", "⚡", "⚡", "⚡", "⚡"];
     return emojis[seed % emojis.length];
   }
-  function provCard(p, stats, status, disabled) {
-    var awakePct = stats.total ? Math.round((stats.awake / stats.total) * 100) : 0;
-    var label;
-    if (status === "healthy") label = "正常";
-    else if (status === "degraded") label = "降级";
-    else label = "不可用";
-    var toggle = disabled
-      ? '<button class="ghost ok" data-enable-provider="' + esc(p) + '" type="button" title="重新启用该供应商">启用</button>'
-      : '<button class="ghost danger" data-disable-provider="' + esc(p) + '" type="button" title="禁用该供应商（不再参与自动切换）">禁用</button>';
-    return '<div class="prov-status-card ' + status + (disabled ? " disabled" : "") + '" data-prov="' + esc(p) + '">' +
-      '<div class="picon">' + provIcon(p) + "</div>" +
-      '<div>' +
-        '<div class="pname">' + esc(p) + "</div>" +
-        '<div class="pstat">' + stats.awake + "/" + stats.total + " 苏醒" + (stats.preferred ? " · " + stats.preferred + " 偏好" : "") + "</div>" +
-        '<div class="prov-bar"><span style="width:' + awakePct + '%"></span></div>' +
-      "</div>" +
-      '<div class="pright">' +
-        '<div class="pcount">' + stats.awake + '<small>/' + stats.total + "</small></div>" +
-        '<div class="pstat">' + label + "</div>" +
-        toggle +
-      "</div>" +
-    "</div>";
+  function providerHealth(models, p) {
+    var list = models.filter(function (m) { return (m.provider || "") === p; });
+    var total = list.length;
+    var awake = list.filter(function (m) { return !m.cooling; }).length;
+    var status = total === 0 ? "down" : (awake === 0 ? "down" : (awake < total ? "degraded" : "healthy"));
+    return { total: total, awake: awake, status: status, preferred: list.filter(function (m) { return m.preferred; }).length };
   }
-  function providerStatusGrid(models, provFilter, disabledProviders) {
-    var groups = providerStatus(models);
-    var keys = Object.keys(groups).sort();
+  function effectiveProviders(models, includeProviders) {
+    var freeSet = {};
+    models.forEach(function (m) { if (m.provider) freeSet[m.provider] = true; });
+    if (Array.isArray(includeProviders) && includeProviders.length) return includeProviders.slice();
+    return Object.keys(freeSet);
+  }
+  function renderProviderDialogRows(allProviders, models, selectedSet, creditMap, disabledProviders) {
+    var q = (provSearch || "").trim().toLowerCase();
     var parts = [];
-    keys.forEach(function (p) {
-      var stats = groups[p];
-      var awake = stats.awake;
-      var total = stats.total;
-      var status;
-      if (awake === 0) status = "down";
-      else if (awake < total) status = "degraded";
-      else status = "healthy";
-      var disabled = Array.isArray(disabledProviders) && disabledProviders.indexOf(p) >= 0;
-      if (provFilter === "all" || status === provFilter) {
-        parts.push(provCard(p, stats, status, disabled));
+    (allProviders || []).forEach(function (prov) {
+      var p = prov.id || prov;
+      var name = prov.name || p;
+      if (q && (p + " " + name).toLowerCase().indexOf(q) < 0) return;
+      var selected = !!selectedSet[p];
+      var freeTag = providerHealth(models, p).total > 0
+        ? '<span class="tag free">免费</span>'
+        : '<span class="tag paid">付费</span>';
+      var credit = creditMap[p];
+      var hasCredits = credit && (credit.used !== undefined || credit.balance !== undefined);
+      var creditText = "";
+      if (hasCredits) {
+        creditText = '<span class="chip-credit">积分 <b>' + (credit.used ?? 0) + "/" + (credit.total ?? 0) + "</b></span>";
       }
+      var disabledMark = disabledProviders[p] ? '<span class="chip-credit">已禁用</span>' : "";
+      var cls = ["dlg-item", selected ? "selected" : ""].filter(Boolean).join(" ");
+      parts.push(
+        '<label class="' + cls + '" data-prov="' + esc(p) + '">' +
+          '<input type="checkbox" class="prov-chip-check"' + (selected ? " checked" : "") + ' data-prov-check="' + esc(p) + '">' +
+          '<span class="chip-ic">' + provIcon(p) + "</span>" +
+          '<span class="chip-name">' + esc(p) + "</span>" +
+          freeTag +
+          '<span class="chip-credit-wrap">' + creditText + disabledMark + "</span>" +
+        "</label>"
+      );
     });
     return parts.join("");
   }
-  function modelTree(models, activeId, sortMode) {
-    var q = filter.trim().toLowerCase();
-    var groups = {};
-    var order = [];
-    models.forEach(function (m) {
-      var p = m.provider || "—";
-      if (!groups[p]) { groups[p] = []; order.push(p); }
-      if (!q || (m.id + " " + m.provider + " " + m.name).toLowerCase().indexOf(q) >= 0) {
-        groups[p].push(m);
-      }
-    });
-    order.forEach(function (p) {
-      groups[p].sort(function (a, b) { return compareModels(a, b, sortMode); });
-    });
+  function renderSelectedProviders(selectedIds, models, creditMap, disabledProviders) {
     var parts = [];
-    order.forEach(function (p) {
-      var list = groups[p];
-      if (!list.length) return;
-      var awake = list.filter(function (m) { return !m.cooling; }).length;
-      var collapsed = collapsedProviders.has(p);
-      var rows = list.map(function (m) { return modelRow(m, activeId); }).join("");
+    (selectedIds || []).slice().sort().forEach(function (p) {
+      var h = providerHealth(models, p);
+      var credit = creditMap[p];
+      var hasCredits = credit && (credit.used !== undefined || credit.balance !== undefined);
+      var sub = h.total
+        ? h.awake + "/" + h.total + " 苏醒" + (h.preferred ? " · " + h.preferred + " 偏好" : "")
+        : "无免费模型";
+      var creditText = "";
+      if (hasCredits) {
+        var amt = credit.balance !== undefined ? " · 余额 " + credit.balance : "";
+        creditText = '<span class="prov-credit">积分 <b>' + (credit.used ?? 0) + "/" + (credit.total ?? 0) + "</b>" + amt + "</span>";
+      }
+      var cls = ["prov-item", h.status, provFocus === p ? "selected" : "", hasCredits ? "has-credits" : "", disabledProviders[p] ? "disabled" : ""].filter(Boolean).join(" ");
+      var freeTag = h.total > 0 ? '<span class="tag free">免费</span>' : '<span class="tag paid">付费</span>';
       parts.push(
-        '<div class="prov-group' + (collapsed ? " collapsed" : "") + '" data-prov="' + esc(p) + '">' +
-          '<div class="prov-head" data-toggle-prov="' + esc(p) + '">' +
-            '<span class="caret">▾</span>' +
-            '<span class="prov-name">' + esc(p) + "</span>" +
-            '<span class="prov-meta dim">' + list.length + " 个 · " + awake + " 苏醒</span>" +
+        '<div class="' + cls + '" data-prov="' + esc(p) + '" data-prov-filter="' + esc(p) + '" title="点击筛选该供应商的模型，再点取消">' +
+          '<div class="prov-ic">' + provIcon(p) + "</div>" +
+          '<div class="prov-name">' + esc(p) + "</div>" +
+          freeTag +
+          '<div class="prov-sub"><span class="dot"></span><span>' + esc(sub) + "</span></div>" +
+          creditText +
+          '<div class="prov-actions">' +
+            (disabledProviders[p]
+              ? '<button class="ghost ok" data-enable-provider="' + esc(p) + '" type="button">启用</button>'
+              : '<button class="ghost danger" data-disable-provider="' + esc(p) + '" type="button">禁用</button>') +
           "</div>" +
-          '<div class="prov-body"' + (collapsed ? " hidden" : "") + ">" + rows + "</div>" +
         "</div>"
       );
     });
     return parts.join("");
+  }
+  function modelTier(m, activeId) {
+    if (m.id === activeId) return 0; // 正在使用
+    if (m.disabled) return 4; // 已禁用
+    if (m.cooling) return 3; // 冷却
+    if (m.preferred) return 1; // 苏醒 · 偏好
+    return 2; // 苏醒
+  }
+  function modelTree(models, activeId, sortMode) {
+    var q = filter.trim().toLowerCase();
+    var list = models.filter(function (m) {
+      return !q || (m.id + " " + m.provider + " " + m.name).toLowerCase().indexOf(q) >= 0;
+    });
+    list.sort(function (a, b) {
+      if (sortMode === "priority") {
+        var ta = modelTier(a, activeId);
+        var tb = modelTier(b, activeId);
+        if (ta !== tb) return ta - tb;
+        return compareModels(a, b, "wake");
+      }
+      return compareModels(a, b, sortMode);
+    });
+    return list.map(function (m) { return modelRow(m, activeId); }).join("");
   }
   function txt(id, value) {
     var el = document.getElementById(id);
@@ -592,6 +618,7 @@
     txt("s-awake", models.length ? "/ " + n(awake) + " 苏醒" : "");
     txt("model-count", models.length ? "· " + models.length + (preferredCount ? " · " + preferredCount + " 偏好" : "") : "");
     txt("gateway", state.gateway || "—");
+    txt("version", state.version || "—");
     txt("config-path", state.configFile || "—");
 
     if (state.discoveryError) {
@@ -607,15 +634,34 @@
       }
     }
 
-    // ---- 供应商状态监控 ----
-    var provGroups = providerStatus(models);
-    var provKeys = Object.keys(provGroups).sort();
-    var provHTML = providerStatusGrid(models, provFilter, state.disabledProviders || []);
-    html("prov-status", provHTML);
-    hidden("prov-status-empty", !!provHTML);
-    txt("prov-count", provKeys.length ? "· " + provKeys.length : "");
+    // ---- 选择提供商（dialog）+ 已选列表（左栏）----
+    var provDisabledObj = {};
+    (Array.isArray(state.disabledProviders) ? state.disabledProviders : []).forEach(function (p) { provDisabledObj[p] = true; });
+    var creditMap = {};
+    (state.credits || []).forEach(function (c) { if (c && c.provider) creditMap[c.provider] = c; });
+    var selProviders = effectiveProviders(models, state.config?.includeProviders);
+    var selSet = {};
+    selProviders.forEach(function (p) { selSet[p] = true; });
+    var allProviders = state.allProviders || [];
+    var dlgHTML = renderProviderDialogRows(allProviders, models, selSet, creditMap, provDisabledObj);
+    html("dlg-prov-list", dlgHTML);
+    hidden("dlg-prov-empty", !!dlgHTML);
+    txt("prov-count", allProviders.length ? "· " + allProviders.length : "");
 
-    var modelHTML = modelTree(models, state.activeModel ? state.activeModel.id : null, sortMode);
+    if (provFocus && !selSet[provFocus]) provFocus = "";
+    var selHTML = renderSelectedProviders(selProviders, models, creditMap, provDisabledObj);
+    html("sel-prov-list", selHTML);
+    hidden("sel-prov-empty", !!selHTML);
+    txt("sel-count", selProviders.length ? "· " + selProviders.length : "");
+
+    // 默认展示全部模型；点击左栏某供应商则只看它的，再点恢复
+    var visibleModels = provFocus
+      ? models.filter(function (m) { return (m.provider || "") === provFocus; })
+      : models;
+    txt("model-count", visibleModels.length
+      ? "· " + visibleModels.length + (provFocus ? " · " + provFocus : "")
+      : provFocus ? "· " + provFocus : "");
+    var modelHTML = modelTree(visibleModels, state.activeModel ? state.activeModel.id : null, sortMode);
     html("models", modelHTML);
     hidden("models-empty", !!modelHTML);
     if (state.activeModel && state.activeModel.id) {
@@ -706,12 +752,27 @@
       action("/api/enable", { provider: enProv.getAttribute("data-enable-provider") });
       return;
     }
-    var provToggle = t.closest("[data-toggle-prov]");
-    if (provToggle) {
-      var prov = provToggle.getAttribute("data-toggle-prov");
-      if (collapsedProviders.has(prov)) collapsedProviders.delete(prov);
-      else collapsedProviders.add(prov);
+    var provFilterClick = t.closest("[data-prov-filter]");
+    if (provFilterClick) {
+      var pf = provFilterClick.getAttribute("data-prov-filter");
+      provFocus = provFocus === pf ? "" : pf;
       render();
+      return;
+    }
+    var provCheck = t.closest("[data-prov-check]");
+    if (provCheck) {
+      var provId = provCheck.getAttribute("data-prov-check");
+      // 当前生效集合：includeProviders 非空用它，否则为有免费模型的全部供应商（auto）
+      var base = effectiveProviders(state.models || [], state.config?.includeProviders);
+      var next;
+      if (provCheck.checked) {
+        var cur = state.config?.includeProviders;
+        next = Array.isArray(cur) && cur.length ? cur.slice() : base.slice();
+        if (next.indexOf(provId) < 0) next.push(provId);
+      } else {
+        next = base.filter(function (p) { return p !== provId; });
+      }
+      action("/api/providers", { providers: next });
       return;
     }
     var themeBtn = t.closest("#theme-toggle");
@@ -739,14 +800,51 @@
   });
   var sortEl = document.getElementById("sort");
   if (sortEl) sortEl.addEventListener("change", function (ev) {
-    sortMode = ev.target.value || "wake";
+    sortMode = ev.target.value || "priority";
     render();
   });
-  var provFilterEl = document.getElementById("prov-filter");
-  if (provFilterEl) provFilterEl.addEventListener("change", function (ev) {
-    provFilter = ev.target.value || "all";
+  var provSearchEl = document.getElementById("prov-search");
+  if (provSearchEl) provSearchEl.addEventListener("input", function (ev) {
+    provSearch = ev.target.value || "";
     render();
   });
+  // 选择提供商 dialog：顶栏按钮打开，关闭按钮/点击遮罩关闭
+  var provDialog = document.getElementById("prov-dialog");
+  var provPickerBtn = document.getElementById("prov-picker-btn");
+  var provDialogClose = document.getElementById("prov-dialog-close");
+  if (provPickerBtn && provDialog) provPickerBtn.addEventListener("click", function () { provDialog.showModal(); });
+  if (provDialogClose && provDialog) provDialogClose.addEventListener("click", function () { provDialog.close(); });
+  if (provDialog) provDialog.addEventListener("click", function (ev) {
+    if (ev.target === provDialog) provDialog.close();
+  });
+  // 拖拽分隔条调整左右栏宽度
+  (function setupSplitter() {
+    var splitter = document.getElementById("splitter");
+    var grid = document.getElementById("grid2");
+    if (!splitter || !grid) return;
+    var dragging = false;
+    function onMove(ev) {
+      if (!dragging) return;
+      var rect = grid.getBoundingClientRect();
+      var x = ev.clientX - rect.left;
+      var pct = (x / rect.width) * 100;
+      pct = Math.max(18, Math.min(72, pct));
+      grid.style.setProperty("--prov-w", pct + "%");
+    }
+    function onUp() {
+      dragging = false;
+      splitter.classList.remove("dragging");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    splitter.addEventListener("mousedown", function (ev) {
+      dragging = true;
+      splitter.classList.add("dragging");
+      ev.preventDefault();
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  })();
   var refreshEl = document.getElementById("refresh");
   if (refreshEl) refreshEl.addEventListener("click", function () { action("/api/refresh"); });
   var clearEl = document.getElementById("clear");

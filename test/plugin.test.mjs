@@ -300,6 +300,109 @@ test("the preferred API toggles a model in config.json", async () => {
   }
 });
 
+test("console providers endpoint sets the includeProviders whitelist", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    const configFile = path.join(dir, "free-switch", "config.json");
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    fs.writeFileSync(configFile, JSON.stringify({ includeProviders: ["kiro"] }));
+    const readInclude = () => {
+      try { return JSON.parse(fs.readFileSync(configFile, "utf8")).includeProviders || []; } catch { return []; }
+    };
+    const consoleServer = createConsole({
+      getState: async () => ({ now: 1, stats: {}, config: { includeProviders: readInclude() }, models: [{ id: "zen/a", provider: "kilo" }, { id: "zen/b", provider: "kiro" }], traces: [] }),
+      refresh: async () => {},
+      clearCooldown: async () => {},
+    });
+    const url = await consoleServer.start(0);
+    let res = await fetch(`${url}/api/providers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providers: ["kilo", "kiro"] }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(readInclude(), ["kilo", "kiro"]);
+    // Drop back to all providers with an empty list
+    res = await fetch(`${url}/api/providers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providers: [] }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(readInclude(), []);
+    await consoleServer.stop();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("console provider endpoint selects the failover provider", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    const configFile = path.join(dir, "free-switch", "config.json");
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    fs.writeFileSync(configFile, JSON.stringify({ includeProviders: [] }));
+    const readInclude = () => {
+      try { return JSON.parse(fs.readFileSync(configFile, "utf8")).includeProviders || []; } catch { return []; }
+    };
+    const consoleServer = createConsole({
+      getState: async () => ({ now: 1, stats: {}, config: { includeProviders: readInclude() }, models: [{ id: "zen/a", provider: "kilo" }], traces: [] }),
+      refresh: async () => {},
+      clearCooldown: async () => {},
+    });
+    const url = await consoleServer.start(0);
+    let res = await fetch(`${url}/api/provider`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "kilo" }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(readInclude(), ["kilo"]);
+    let saved = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    assert.deepEqual(saved.includeProviders, ["kilo"]);
+    // Select all -> empty list
+    res = await fetch(`${url}/api/provider`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "" }),
+    });
+    assert.equal(res.status, 200);
+    saved = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    assert.deepEqual(saved.includeProviders, []);
+    await consoleServer.stop();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readCredits reads magpie quota balances and credit usage", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "quotas.json"), JSON.stringify({
+      "codearts/me": { at: "2026-11-05T14:11:42Z", quota: { provider: "codearts", name: "CodeArts", icon: "x", plan: "体验版", balance: "$0.00", windows: [{ name: "总积分", used: 100, display: "4400/4500", amount: 4500, limit: 4500, unit: "credits", resetsAt: "2026-11-23T16:00:00Z" }] } },
+    }));
+    fs.writeFileSync(path.join(dir, "credits-daily.json"), JSON.stringify({
+      "trae-cn|me|Credits": { since: "2026-10-28", last: { used: 947.15, total: 1600, at: "2026-11-05T10:14:45Z" } },
+    }));
+    const { readCredits } = await import("../src/config.mjs");
+    const credits = readCredits();
+    assert.ok(Array.isArray(credits));
+    const codearts = credits.find((c) => c.provider === "codearts");
+    assert.ok(codearts, "codearts should appear in the credit snapshot");
+    assert.equal(codearts.balance, "$0.00");
+    const trae = credits.find((c) => c.provider === "trae-cn");
+    assert.ok(trae, "trae-cn should appear in the credit snapshot");
+    assert.equal(trae.total, 1600);
+    assert.equal(trae.used, 947.15);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("console disable / enable / switch endpoints route to the right handler", async () => {
   const state = { models: {}, disabledProviders: [], manualSwitch: null, stats: {} };
   const consoleServer = createConsole({

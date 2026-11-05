@@ -13,6 +13,7 @@ import {
   normalizeModel,
   parseDuration,
   parseReset,
+  paidCandidates,
   selectCandidates,
   shouldStop,
   supports,
@@ -301,4 +302,35 @@ test("cooldownActive only looks forward", () => {
   assert.equal(cooldownActive({ until: 200 }, 100), true);
   assert.equal(cooldownActive({ until: 100 }, 100), false);
   assert.equal(cooldownActive(undefined, 100), false);
+});
+
+test("paidCandidates keeps only paid rows of the catalog, in order", () => {
+  const catalog = [
+    { id: "zen/a", provider: "zen", name: "a", free: true },
+    { id: "zen/b", provider: "zen", name: "b", free: false },
+    { id: "cn/glm", provider: "cn", name: "glm", free: false },
+  ];
+  const paid = paidCandidates(catalog, {}, DEFAULT_CONFIG, DEFAULT_CONFIG, Date.now(), []);
+  assert.deepEqual(paid.map((m) => m.id), ["zen/b", "cn/glm"]);
+});
+
+test("paidCandidates skips disabled providers/models and cooling entries", () => {
+  const catalog = [
+    { id: "zen/b", provider: "zen", name: "b", free: false },
+    { id: "zen/c", provider: "zen", name: "c", free: false },
+  ];
+  const paid = paidCandidates(catalog, {}, DEFAULT_CONFIG, DEFAULT_CONFIG, Date.now(), ["zen/c"]);
+  assert.deepEqual(paid.map((m) => m.id), ["zen/b"]);
+  const cooling = paidCandidates([{ id: "zen/b", provider: "zen", name: "b", free: false }], { "zen/b": { until: Date.now() + 60_000, reason: "rate" } }, DEFAULT_CONFIG, DEFAULT_CONFIG, Date.now(), []);
+  assert.deepEqual(cooling, []);
+});
+
+test("paidCandidates filters by capability needs, then relaxes when nothing fits", () => {
+  const catalog = [
+    { id: "zen/b", provider: "zen", name: "b", free: false, toolcall: false },
+    { id: "cn/glm", provider: "cn", name: "glm", free: false, toolcall: true },
+  ];
+  const needs = { tools: true, images: false, reasoning: false, stream: false };
+  const capable = paidCandidates(catalog, {}, needs, DEFAULT_CONFIG, Date.now(), []);
+  assert.deepEqual(capable.map((m) => m.id), ["cn/glm"]);
 });

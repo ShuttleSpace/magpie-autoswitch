@@ -7,12 +7,14 @@ import {
   cooldownSummary,
   discoverFreeModels,
   buildModelCatalog,
+  paidCandidates,
+  STRATEGIES,
   matchesModel,
   needsOf,
   selectCandidates,
   shouldStop,
 } from "./core.mjs";
-import { appendTrace, configPath, loadConfig, loadState, readAllProviders, readCredits, readTraces, saveState, STATE_MAX_AGE } from "./config.mjs";
+import { appendTrace, configPath, loadConfig, loadState, readAllProviders, readCredits, readTraces, saveState, writeJSON, STATE_MAX_AGE } from "./config.mjs";
 import { fetchModelRows, gatewayAddress, postChat, readLimited } from "./gateway.mjs";
 import { createConsole } from "./console.mjs";
 
@@ -269,6 +271,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     disable: (body) => disableWith(body),
     enable: (body) => enableWith(body),
     switch: (body) => setManualSwitch(body?.model),
+    setStrategy: (strategy) => setStrategy(strategy),
   });
 
   function effectiveConfig() {
@@ -432,11 +435,21 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
 
     const config = effectiveConfig();
     const needs = needsOf(body);
+    const catalog = cache.catalog ?? [];
     const manual = state.manualSwitch && typeof state.manualSwitch.model === "string" ? state.manualSwitch : null;
     let forced = null;
     let forcedDisabled = false;
     if (manual) {
+      // 手动切换：先在免费池里找，找不到再到全量目录里找付费模型（用户在控制台
+      // 显式点了「切换」，此时允许计费）。两种情况都把 forced 排到候选最前。
       forced = models.find((m) => m.id === manual.model || m.id.startsWith(`${manual.model}/`)) || null;
+      if (!forced) {
+        const paid = catalog.find((m) => m.free === false && (m.id === manual.model || m.id.startsWith(`${manual.model}/`)));
+        if (paid) {
+          forced = paid;
+          log(input, "warn", `manual switch to PAID model ${paid.id}: this attempt may incur charges`);
+        }
+      }
       forcedDisabled = !!forced && !!(state.models[forced.id]?.disabled || (Array.isArray(state.disabledProviders) && state.disabledProviders.some((p) => matchesModel(forced, p))));
       if (forced && !forcedDisabled) {
         state.models[forced.id] = { ...(state.models[forced.id] ?? {}), until: 0, reason: undefined, failures: 0, disabled: false, lastAttemptAt: Date.now() };
@@ -449,11 +462,25 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       state.manualSwitch = null;
     }
     const selection = selectCandidates(models, state.models, needs, config, Date.now(), state.disabledProviders);
+    const strategy = STRATEGIES.has(config.strategy) ? config.strategy : "free";
     let ordered = selection.ordered;
+    const max = Math.max(1, Math.min(20, Math.trunc(Number(config.maxTries) || 6)));
+    if (strategy === "paid-first" || strategy === "free-first") {
+      // 策略并入付费候选。付费候选受 maxPaidTries 严格限制；合并后整体按
+      // maxTries 切片，保证单次请求总尝试数有上限，避免失控计费。
+      const paid = paidCandidates(catalog, state.models, needs, config, Date.now(), state.disabledProviders)
+        .filter((m) => !forced || m.id !== forced.id)
+        .slice(0, Math.max(0, Math.trunc(Number(config.maxPaidTries) || 0)));
+      ordered = strategy === "paid-first" ? [...paid, ...ordered] : [...ordered, ...paid];
+      ordered = ordered.slice(0, max);
+    }
     if (forced && !forcedDisabled) {
       ordered = [forced, ...ordered.filter((m) => m.id !== forced.id)];
     }
-    if (!ordered.length || ((needs.tools || needs.images || needs.reasoning) && selection.capable === 0)) {
+    // 付费策略模式下候选来自 paidCandidates（已按能力过滤或放宽），直接用 ordered
+    // 判断是否有可用候选，避免只看免费池的 capability 计数。
+    const capabilityOk = strategy === "free" ? selection.capable > 0 : ordered.some((m) => supports(m, needs));
+    if (!ordered.length || ((needs.tools || needs.images || needs.reasoning) && !capabilityOk)) {
       trace.exhausted = true;
       trace.error = "no candidate for request capabilities";
       finishTrace(trace);
@@ -718,6 +745,20 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     return { ok: true };
   }
 
+  // 控制台设置自动切换策略。策略只影响自动候选池；手动切换到付费模型始终可用。
+  function setStrategy(strategy) {
+    const s = typeof strategy === "string" ? strategy.trim() : "";
+    if (!STRATEGIES.has(s)) return { ok: false, error: `unknown strategy: ${s || "(empty)"}` };
+    const config = loadConfig();
+    config.strategy = s;
+    try {
+      writeJSON(configPath(), config);
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+    return { ok: true };
+  }
+
   function clearCooldown(model) {
     if (model) delete state.models[model];
     else state.models = {};
@@ -782,6 +823,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         includeProviders: config.includeProviders,
         excludeProviders: config.excludeProviders,
         preferredModels: config.preferredModels,
+        strategy: config.strategy,
+        maxPaidTries: config.maxPaidTries,
       },
       disabledProviders: Array.isArray(state.disabledProviders) ? [...state.disabledProviders] : [],
       manualSwitch: state.manualSwitch ?? null,
@@ -791,20 +834,23 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       credits: readCredits(),
       models,
       catalog: (cache.catalog ?? []).map((model) => {
-        const free = models.find((m) => m.id === model.id);
+        const entry = state.models[model.id] ?? {};
+        const summary = cooldownSummary(entry, now);
+        const preferred = Array.isArray(config.preferredModels) && config.preferredModels.some((p) => matchesModel(model, p));
         return {
           id: model.id,
           provider: model.provider,
           name: model.name,
           free: !!model.free,
-          cooling: free ? free.cooling : false,
-          until: free ? free.until : 0,
-          failures: free ? free.failures : 0,
-          lastStatus: free ? free.lastStatus : null,
-          lastStatusAt: free ? free.lastSuccessAt : null,
-          lastError: free ? free.lastError : null,
-          disabled: free ? free.disabled : false,
-          preferred: free ? free.preferred : false,
+          cooling: summary.cooling,
+          until: summary.until,
+          failures: entry.failures ?? 0,
+          lastStatus: entry.lastStatus ?? null,
+          lastError: entry.lastError ?? null,
+          reason: entry.reason ?? null,
+          disabled: !!entry.disabled || (Array.isArray(state.disabledProviders) && state.disabledProviders.some((p) => matchesModel(model, p))),
+          preferred,
+          lastSuccessAt: entry.lastSuccessAt ?? null,
         };
       }),
       traces: traces.slice(-50).reverse(),

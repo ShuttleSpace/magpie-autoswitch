@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_CONFIG } from "./core.mjs";
+import { DEFAULT_CONFIG, STRATEGIES } from "./core.mjs";
 
 const TRACE_MAX_BYTES = 2 * 1024 * 1024;
 const TRACE_KEEP_LINES = 1000;
@@ -156,6 +156,11 @@ export function loadConfig() {
   config.maxTries = Math.max(1, Math.min(20, Math.trunc(config.maxTries)));
   config.refreshSeconds = Math.max(5, Math.min(3600, config.refreshSeconds));
   config.consolePort = Math.max(0, Math.min(65535, Math.trunc(config.consolePort)));
+  if (!STRATEGIES.has(config.strategy)) config.strategy = DEFAULT_CONFIG.strategy;
+  {
+    const paid = Number(config.maxPaidTries);
+    config.maxPaidTries = Number.isFinite(paid) ? Math.max(0, Math.min(20, Math.trunc(paid))) : DEFAULT_CONFIG.maxPaidTries;
+  }
   config.tryCooling = boolish(config.tryCooling, true);
   config.diversifyProviders = boolish(config.diversifyProviders, true);
   config.console = boolish(config.console, false);
@@ -177,6 +182,10 @@ function applyEnv(config) {
   if (port !== undefined) config.consolePort = Math.max(0, Math.min(65535, Math.trunc(port)));
   const tries = numberEnv(process.env.FREE_SWITCH_MAX_TRIES);
   if (tries !== undefined) config.maxTries = Math.max(1, Math.min(20, Math.trunc(tries)));
+  const strategy = process.env.FREE_SWITCH_STRATEGY?.trim();
+  if (strategy && STRATEGIES.has(strategy)) config.strategy = strategy;
+  const paidTries = numberEnv(process.env.FREE_SWITCH_MAX_PAID_TRIES);
+  if (paidTries !== undefined) config.maxPaidTries = Math.max(0, Math.min(20, Math.trunc(paidTries)));
   const refresh = numberEnv(process.env.FREE_SWITCH_REFRESH_SECONDS);
   if (refresh !== undefined) config.refreshSeconds = Math.max(5, Math.min(3600, refresh));
   const cooling = boolEnv(process.env.FREE_SWITCH_TRY_COOLING);

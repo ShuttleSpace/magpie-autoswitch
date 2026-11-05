@@ -8,6 +8,12 @@ export const SELF_PROVIDERS = new Set([PROVIDER, `${PROVIDER}-plugin`]);
 // Bump alongside RELEASE_NOTES.md when shipping a change.
 export const VERSION = "0.3.0";
 
+// Auto-switch strategy: how paid models participate in the failover pool.
+// "free"        — paid models are never tried automatically (default).
+// "paid-first"  — try up to maxPaidTries paid models before the free pool.
+// "free-first"  — try the free pool first, then fall back to paid models.
+export const STRATEGIES = new Set(["free", "paid-first", "free-first"]);
+
 export const DEFAULT_CONFIG = {
   // The order providers (or full model ids) are tried in. Anything left over
   // follows alphabetically by provider and then by model id.
@@ -29,6 +35,12 @@ export const DEFAULT_CONFIG = {
   freeProviders: [],
   // 优先级（偏好模型）：检查后，优先使用这些模型，尽管它们在优先级数组中靠后。
   preferredModels: [],
+  // 自动切换策略："free"（只用免费）、"paid-first"（先付费后免费）、
+  // "free-first"（先免费后付费）。付费模型仅在用户显式开启时才会被自动尝试，
+  // 手动切换到付费模型始终可用且始终计费。
+  strategy: "free",
+  // 单次请求最多尝试的付费模型数（付费模型可能产生实际费用，需严格上限）。
+  maxPaidTries: 2,
   maxTries: 6,
   refreshSeconds: 60,
   cooldownSeconds: 60,
@@ -309,6 +321,34 @@ export function supports(model, needs) {
   if (needs.images && model.image === false) return false;
   if (needs.reasoning && model.reasoning === false) return false;
   return true;
+}
+
+// Paid-model candidate pool for the auto-switch strategy. Returns paid rows
+// from the catalog that survive the same include/exclude/disabled/capability
+// filters as the free pool, skipping ones already cooling. Never includes free
+// rows: callers prepend/append the result to the free failover order, so a bug
+// here must not leak free rows into paid placement.
+export function paidCandidates(catalog, stateModels, needs, config = DEFAULT_CONFIG, now = Date.now(), disabledProviders = []) {
+  const all = Array.isArray(catalog) ? catalog.filter((m) => m && m.free === false) : [];
+  const includeProviders = Array.isArray(config.includeProviders) ? config.includeProviders : [];
+  const excludeProviders = Array.isArray(config.excludeProviders) ? config.excludeProviders : [];
+  const excludeModels = Array.isArray(config.excludeModels) ? config.excludeModels : [];
+  const providers = Array.isArray(disabledProviders) ? disabledProviders : [];
+  const isDisabled = (m) => {
+    if (stateModels?.[m.id]?.disabled) return true;
+    return providers.some((p) => matchesModel(m, p));
+  };
+  const out = [];
+  for (const m of all) {
+    if (isDisabled(m)) continue;
+    if (includeProviders.length && !includeProviders.some((p) => matchesModel(m, p))) continue;
+    if (excludeProviders.some((p) => matchesModel(m, p))) continue;
+    if (excludeModels.some((p) => matchesModel(m, p))) continue;
+    if (cooldownActive(stateModels?.[m.id], now)) continue;
+    out.push(m);
+  }
+  const capable = out.filter((m) => supports(m, needs));
+  return capable.length ? capable : out;
 }
 
 // Awake models keep their configured order and always come first. When none

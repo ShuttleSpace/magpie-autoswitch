@@ -53,6 +53,12 @@ magpie plugin login free-switch
    - 所有冷却都受 `maxCooldownSeconds`（默认 8 小时）限制。
 8. **恢复**：冷却时间过去后，模型自动重新进入“苏醒”候选，和顺序更靠前的苏醒模型一起参与下一次选择；成功一次就清空失败计数。
 
+9. **付费策略**：默认只在免费模型之间切换（`strategy: "free"`）。可选策略：
+   - `free`（完全免费）：只走免费候选池，付费模型从不自动参与。
+   - `paid-first`（先付费后免费）：先按 `maxPaidTries`（默认 2）个付费模型尝试，再进入免费池。
+   - `free-first`（先免费后付费）：先走免费池，全部失败/耗尽后再用付费模型兜底。
+   付费候选池由 `paidCandidates` 从全量目录（含付费行）过滤：排除禁用供应商/模型、冷却中的付费模型，并按本次请求的能力过滤（失败则放宽）。付费尝试受 `maxPaidTries` 与 `maxTries` 双重上限，避免一次 failover 失控计费。付费模型的**手动切换**（console「切换付费」）始终可用、不受策略限制，由用户显式触发即计费。
+
 ### 限时免费模型（如 `workbuddy-ai/hy4-preview`）
 
 插件**只从 Magpie 的 `/v1/models` 发现模型**，能否纳入完全取决于 Magpie 暴露的数据。一个模型会被判定为免费，当且仅当它满足以下任一明确信号：
@@ -145,6 +151,8 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
   "excludeModels": [],
   "freeProviders": [],
   "preferredModels": [],
+  "strategy": "free",
+  "maxPaidTries": 2,
   "maxTries": 6,
   "refreshSeconds": 60,
   "cooldownSeconds": 60,
@@ -166,6 +174,8 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
 | `includeModels` / `excludeModels` | 只包含/排除某些模型，同样支持通配和正则。 |
 | `freeProviders` | 强制把这些 provider 的模型视为免费（有些中转不返回 pricing）。 |
 | `preferredModels` | 偏好模型列表。勾选（或在配置里列出）的模型会优先被尝试，支持 provider id、完整 model id、`*` 通配或 `/正则/`。控制台里勾选会自动写入这里。 |
+| `strategy` | 自动切换策略：`free`（完全免费，默认）、`paid-first`（先付费后免费）、`free-first`（先免费后付费）。控制台模型面板下拉框实时生效。 |
+| `maxPaidTries` | 单次请求最多尝试的付费模型数（默认 2），用于 `paid-first` / `free-first` 策略，防止失控计费。 |
 | `maxTries` | 一个请求最多尝试几个模型，1–20。 |
 | `refreshSeconds` | 模型列表缓存时间，默认 60 秒；控制台“刷新模型”会立即刷新。 |
 | `cooldownSeconds` | 429 没有重置提示时的基础冷却秒数。 |
@@ -177,7 +187,7 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
 | `diversifyProviders` | 默认开：第一轮每个 provider 只取一个模型，再取第二个，避免一个 provider 的免费池全被限流时占满所有重试次数。关掉后严格按优先级列表顺序。 |
 | `console` / `consolePort` | Web 控制台开关和端口。Magpie 的 Plugin options 开关优先；`console` 字段只在宿主没有 options 时作为后备，服务器可用 `FREE_SWITCH_CONSOLE`。 |
 
-环境变量覆盖：`FREE_SWITCH_CONSOLE`、`FREE_SWITCH_CONSOLE_PORT`、`FREE_SWITCH_MAX_TRIES`、`FREE_SWITCH_REFRESH_SECONDS`、`FREE_SWITCH_TRY_COOLING`、`FREE_SWITCH_DIVERSIFY_PROVIDERS`、`FREE_SWITCH_PRIORITY`、`FREE_SWITCH_INCLUDE_PROVIDERS`、`FREE_SWITCH_EXCLUDE_PROVIDERS`。如果 Magpie 网关不在本机回环地址、需要真实网关密钥，可设置 `FREE_SWITCH_GATEWAY_KEY`。
+环境变量覆盖：`FREE_SWITCH_CONSOLE`、`FREE_SWITCH_CONSOLE_PORT`、`FREE_SWITCH_MAX_TRIES`、`FREE_SWITCH_REFRESH_SECONDS`、`FREE_SWITCH_TRY_COOLING`、`FREE_SWITCH_DIVERSIFY_PROVIDERS`、`FREE_SWITCH_PRIORITY`、`FREE_SWITCH_INCLUDE_PROVIDERS`、`FREE_SWITCH_EXCLUDE_PROVIDERS`、`FREE_SWITCH_STRATEGY`、`FREE_SWITCH_MAX_PAID_TRIES`。如果 Magpie 网关不在本机回环地址、需要真实网关密钥，可设置 `FREE_SWITCH_GATEWAY_KEY`。
 
 ## 追踪数据
 

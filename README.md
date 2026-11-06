@@ -167,6 +167,13 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
   "paidMinBalance": 0,
   "maxTries": 6,
   "refreshSeconds": 60,
+  "firstByteTimeoutSeconds": 25,
+  "upstreamRefreshSeconds": 20,
+  "upstreamWindowSeconds": 900,
+  "upstreamMinErrors": 2,
+  "upstreamMaxSoftCooldownSeconds": 300,
+  "upstreamStuckMs": 30000,
+  "maxResetSeconds": 1800,
   "cooldownSeconds": 60,
   "serverErrorCooldownSeconds": 30,
   "authErrorCooldownSeconds": 300,
@@ -191,6 +198,11 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
 | `paidWindow` | 自动使用付费模型的时间窗口（本地时间），如 `"22:00-06:00"`（支持跨午夜）；`null`/留空表示全天。窗口外只走免费池。 |
 | `paidMinBalance` | 供应商余额下限，默认 `0`（不限制）。余额低于该值时该供应商的付费模型不自动参与；无余额数据不拦截。 |
 | `maxTries` | 一个请求最多尝试几个模型，1–20。 |
+| `firstByteTimeoutSeconds` | 单次尝试首字节超时，默认 25 秒，`0` = 禁用。 |
+| `upstreamRefreshSeconds` / `upstreamWindowSeconds` | 上游观测拉取间隔 / 统计窗口，默认 20s / 900s。 |
+| `upstreamMinErrors` / `upstreamMaxSoftCooldownSeconds` | 触发降权的错误次数（默认 2）/ 软降权最长时长（默认 300s）。 |
+| `upstreamStuckMs` | 在飞请求超过多少毫秒算「卡住」，默认 30000。 |
+| `maxResetSeconds` | 上游 `Retry-After` 的上限（默认 1800s），避免一次限流冻几小时。 |
 | `refreshSeconds` | 模型列表缓存时间，默认 60 秒；控制台“刷新模型”会立即刷新。 |
 | `cooldownSeconds` | 429 没有重置提示时的基础冷却秒数。 |
 | `serverErrorCooldownSeconds` | 5xx/网络错误的基础冷却秒数。 |
@@ -226,6 +238,40 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
 
 `state.json` 保存每个模型的 `until`（苏醒时间）、`reason`、`failures`、最近状态和总统计。点控制台的“清空冷却”会立即重置；删除 `state.json` 则在插件重载后生效。
 
+## 上游状态与快速失败
+
+插件会周期性（默认 20s）读取 Magpie 网关的三个只读端点：`/v1/magpie/usage/requests`（每次上游调用的 provider/model/status/ms/ttft_ms/err）、`/v1/magpie/concurrency`（在飞请求）、`/v1/magpie/quotas`（配额窗口）。顶栏「📡 上游状态」打开面板，可以看到：
+
+- 近期被限流/报 5xx 的模型、上游返回的原始错误、429/5xx 次数、p50/p90 延迟与 TTFT；
+- 配额剩余比例和重置时间（剩余 <15% 标红）；
+- 卡住的在飞请求（超过 `upstreamStuckMs` 仍在 `phase: upstream` 的调用）。
+
+这些数据用于**主动降权**：观察到近期 429/5xx 的模型会被排到候选末尾（不删除、不写冷却），避免继续把请求送给已知受限的上游。只统计插件发起的内层调用，调用方主动取消的 `499` 会被排除。
+
+同时，单次尝试有**首字节超时**（`firstByteTimeoutSeconds`，默认 25 秒）：上游常常要几十秒甚至几分钟才返回 429/502，超时后立刻切到下一个模型；每收到一个 SSE chunk 会重置计时，慢慢输出 reasoning 的模型不会被误杀，成功后清除守卫，不中断已开始的输出。上游给的超长 `Retry-After` 受 `maxResetSeconds`（默认 30 分钟）钳制，避免一次限流把模型冻几小时——这是「提示恢复后立刻断开」的主要原因之一。
+
+| 字段 | 作用 |
+| --- | --- |
+| `firstByteTimeoutSeconds` | 单次尝试首字节/首个 SSE event 的超时秒数（默认 25，`0` = 禁用）。 |
+| `upstreamRefreshSeconds` | 上游观测数据拉取间隔（默认 20 秒）。 |
+| `upstreamWindowSeconds` | 统计窗口（默认 900 秒）。 |
+| `upstreamMinErrors` | 窗口内错误达到几次才降权（默认 2）。 |
+| `upstreamMaxSoftCooldownSeconds` | 软降权最长持续时间（默认 300 秒）。 |
+| `upstreamStuckMs` | 在飞请求超过多少毫秒算「卡住」（默认 30000）。 |
+| `maxResetSeconds` | 上游 `Retry-After` 的独立上限（默认 1800 秒）；`maxCooldownSeconds` 仍管指数退避。 |
+
+环境变量：`FREE_SWITCH_FIRST_BYTE_TIMEOUT_SECONDS`、`FREE_SWITCH_UPSTREAM_REFRESH_SECONDS`。
+
+> `/v1/magpie/*` 是 Magpie 的内网端点（不在网关 `/` 的 API 清单里），跨版本可能变化。所有读取都带独立超时、失败静默降级，拿不到数据时插件完全退回原有行为，不影响任何请求路径。
+
+事后排查可以用离线脚本（不发任何请求、不改运行时）：
+
+```sh
+npm run report:upstream -- --hours 24     # 或 --json
+```
+
+它读 `~/.config/magpie/usage.jsonl`、`~/Library/Logs/magpie/app.log`、插件的 `traces.jsonl` / `state.json`，输出受限模型、慢尝试、首字节超时次数、紧张的配额与当前冷却项。
+
 ## 已知限制
 
 - **只支持 Chat Completions 协议**。Magpie 会把 Anthropic Messages、Responses、Gemini 等请求翻译成 Chat 后再交给插件，所以大多数 Agent 都能用；插件自己不会直接说 Anthropic/Gemini 原生协议。
@@ -240,10 +286,11 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
 
 ```sh
 cd magpie-autoswitch
-npm test          # 等价于 node --test test/*.test.mjs
+npm test                              # 等价于 node --test test/*.test.mjs
+npm run report:upstream -- --hours 24 # 离线诊断上游限流
 ```
 
-测试覆盖：免费模型过滤、优先级、苏醒/冷却排序、能力匹配、Retry-After/重置时间解析、429/5xx/401/404/400 的冷却策略、非流式与流式切换、400 直通，以及控制台 HTTP 服务。
+测试覆盖：免费模型过滤、优先级、苏醒/冷却排序、能力匹配、Retry-After/重置时间解析、429/5xx/401/404/400 的冷却策略、非流式与流式切换、400 直通、首字节超时、上游聚合/配额/降权，以及控制台 HTTP 服务。
 
 目录：
 
@@ -255,8 +302,10 @@ src/config.mjs         配置、状态、追踪文件
 src/gateway.mjs        访问 Magpie 网关
 src/console.mjs        本地 Web 控制台服务
 src/console.html       控制台页面
-icon.png               插件与控制台图标
-test/                  Node 内置测试
+icon.png                       插件与控制台图标
+scripts/upstream-report.mjs    离线上游诊断
+docs/upstream-health-design.md 上游健康雷达设计
+test/                          Node 内置测试
 ```
 
 ## License

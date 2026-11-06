@@ -95,3 +95,36 @@ export async function postChat(body, { signal, session } = {}) {
     redirect: "error",
   });
 }
+
+// Read-only observability endpoints of magpie's gateway. These are internal
+// (not listed in the root API index), so every caller must tolerate a missing
+// or changed endpoint: undefined means "no data", never a thrown error.
+async function fetchMagpieJSON(path, signal, timeoutMs = 5000) {
+  const response = await fetch(`${gatewayAddress()}${path}`, {
+    headers: authHeaders({ accept: "application/json" }),
+    signal: timeoutSignal(signal, timeoutMs),
+    redirect: "error",
+  });
+  if (!response.ok) return undefined;
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
+}
+
+export async function fetchUsageRows(signal, limit = 500) {
+  const n = Math.max(1, Math.min(2000, Math.trunc(Number(limit) || 500)));
+  const value = await fetchMagpieJSON(`/v1/magpie/usage/requests?period=7d&limit=${n}`, signal);
+  return Array.isArray(value?.rows) ? value.rows : undefined;
+}
+
+export async function fetchConcurrency(signal) {
+  const value = await fetchMagpieJSON("/v1/magpie/concurrency", signal);
+  return value && typeof value === "object" ? { active: value.active ?? [], data: value.data ?? {}, requests: value.requests ?? 0 } : undefined;
+}
+
+export async function fetchQuotas(signal) {
+  const value = await fetchMagpieJSON("/v1/magpie/quotas", signal);
+  return Array.isArray(value?.data) ? value.data : undefined;
+}

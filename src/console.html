@@ -213,6 +213,26 @@
   .pending-bar .active-dot { background: var(--amber); box-shadow: 0 0 0 0 rgba(255,180,84,0.5); }
   .pending-bar .pending-model { color: var(--amber); font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; word-break: break-all; }
 
+  /* ---- 上游状态 dialog ---- */
+  #upstream-dialog { border: 1px solid var(--line-strong); border-radius: 12px; padding: 0; max-width: 820px; width: calc(100vw - 48px); max-height: min(82vh, 720px); box-shadow: 0 18px 60px rgba(0,0,0,0.35); color: var(--ink); background: var(--panel); }
+  #upstream-dialog .dlg-body { max-height: calc(min(82vh, 720px) - 58px); }
+  #upstream-dialog::backdrop { background: rgba(2,6,23,0.55); backdrop-filter: blur(2px); }
+  .up-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .up-table th { position: sticky; top: 0; background: var(--panel); z-index: 1; white-space: nowrap; }
+  .up-table td { vertical-align: top; }
+  .up-table .up-id { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 11.5px; word-break: break-all; min-width: 190px; }
+  .up-table .up-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .up-table .up-err { color: var(--muted); max-width: 300px; word-break: break-all; }
+  .up-tag { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 6px; font-size: 11px; border: 1px solid var(--line); white-space: nowrap; }
+  .up-tag.bad { color: var(--red); border-color: rgba(255,107,107,0.34); background: rgba(255,107,107,0.08); }
+  .up-tag.warn { color: var(--amber); border-color: rgba(255,180,84,0.34); background: rgba(255,180,84,0.08); }
+  .up-tag.ok { color: var(--green); border-color: rgba(126,231,135,0.30); background: rgba(126,231,135,0.07); }
+  .up-meter { height: 6px; border-radius: 4px; background: rgba(148,163,184,0.16); overflow: hidden; min-width: 90px; }
+  .up-meter i { display: block; height: 100%; background: var(--teal); }
+  .up-meter.tight i { background: var(--red); }
+  .up-note { color: var(--dim); font-size: 11.5px; margin-bottom: 10px; }
+  .tag.upstream { color: var(--amber); border-color: rgba(255,180,84,0.34); background: rgba(255,180,84,0.08); }
+
   /* ---- 设置 dialog ---- */
   #settings-dialog { border: 1px solid var(--line-strong); border-radius: 12px; padding: 0; max-width: 640px; width: calc(100vw - 48px); max-height: min(80vh, 680px); box-shadow: 0 18px 60px rgba(0,0,0,0.35); color: var(--ink); background: var(--panel); }
   #settings-dialog::backdrop { background: rgba(2,6,23,0.55); backdrop-filter: blur(2px); }
@@ -312,6 +332,7 @@
       <span class="pill"><span id="health-dot" class="dot"></span><span id="health-text">连接中</span></span>
       <button id="theme-toggle" class="ghost" type="button" title="切换主题">🌓</button>
       <button id="prov-picker-btn" class="ghost" type="button" title="选择哪些供应商参与自动切换">选择提供商</button>
+      <button id="upstream-btn" class="ghost" type="button" title="查看 Magpie 网关记录的上游限流、配额与卡住的请求">📡 上游状态 <span id="upstream-badge" class="dim"></span></button>
       <button id="settings-btn" class="ghost" type="button" title="设置、运行信息与更新日志">⚙ 设置</button>
     </div>
   </header>
@@ -435,6 +456,44 @@
     </div>
   </dialog>
 
+  <dialog id="upstream-dialog">
+    <div class="dlg-head">
+      <div class="panel-title"><strong>上游状态</strong> <span id="up-at" class="dim"></span></div>
+      <div class="toolbar">
+        <button id="upstream-refresh" class="ghost" type="button" title="立即重新读取 Magpie 网关的调用记录">刷新上游状态</button>
+        <button id="upstream-close" class="ghost" type="button">关闭</button>
+      </div>
+    </div>
+    <div class="dlg-body">
+      <div id="upstream-error" class="up-note" hidden></div>
+      <div class="set-section">
+        <div class="set-title">受限模型 <span id="up-limited-count" class="dim"></span></div>
+        <div id="up-limited-empty" class="empty" hidden>近 <span id="up-window"></span> 分钟内没有观察到上游限流或服务端错误。</div>
+        <table id="up-limited-table" class="up-table" hidden>
+          <thead><tr><th>模型</th><th>状态</th><th>错误</th><th>限流</th><th>5xx</th><th>p50 / p90</th><th>TTFT</th><th>最近错误</th></tr></thead>
+          <tbody id="up-limited-rows"></tbody>
+        </table>
+      </div>
+      <div class="set-section">
+        <div class="set-title">配额窗口 <span class="dim">剩余比例低于 15% 视为紧张</span></div>
+        <div id="up-quota-empty" class="empty" hidden>没有可用的配额数据。</div>
+        <table id="up-quota-table" class="up-table" hidden>
+          <thead><tr><th>供应商 / 窗口</th><th>剩余</th><th>比例</th><th>重置时间</th></tr></thead>
+          <tbody id="up-quota-rows"></tbody>
+        </table>
+      </div>
+      <div class="set-section">
+        <div class="set-title">卡住的在飞请求 <span id="up-stuck-count" class="dim"></span></div>
+        <div id="up-stuck-empty" class="empty" hidden>当前没有超过阈值的在飞请求。</div>
+        <table id="up-stuck-table" class="up-table" hidden>
+          <thead><tr><th>模型</th><th>agent</th><th>阶段</th><th>已等待</th></tr></thead>
+          <tbody id="up-stuck-rows"></tbody>
+        </table>
+      </div>
+      <div class="up-note">数据来自 Magpie 网关的 <code>/v1/magpie/usage/requests</code>、<code>/v1/magpie/concurrency</code>、<code>/v1/magpie/quotas</code>；只统计插件发起的上游调用，已排除调用方主动取消（499）。受限模型仅被排到候选末尾，不会被删除。</div>
+    </div>
+  </dialog>
+
   <dialog id="settings-dialog">
     <div class="dlg-head">
       <div class="panel-title"><strong>设置</strong> <span id="set-version-head" class="dim"></span></div>
@@ -453,6 +512,9 @@
           <dt>自动刷新</dt><dd>界面每 2 秒 · 模型列表每 <span id="set-refresh">60</span> 秒</dd>
           <dt>模型发现</dt><dd id="set-discovered">—</dd>
           <dt>模型</dt><dd id="set-models">—</dd>
+          <dt>首字节超时</dt><dd id="set-first-byte">—</dd>
+          <dt>上游雷达</dt><dd id="set-upstream">—</dd>
+          <dt>Retry-After 上限</dt><dd id="set-max-reset">—</dd>
         </dl>
       </div>
       <div class="set-section">
@@ -645,6 +707,8 @@
     var name = m.name && m.name !== m.id ? '<div class="name">' + esc(m.name) + "</div>" : "";
     var err = m.lastError ? '<div class="name" title="' + esc(m.lastError) + '">' + esc(String(m.lastError).slice(0, 90)) + "</div>" : "";
     var preferredTag = m.preferred ? '<span class="tag pref">偏好</span>' : "";
+    var upLimited = (state && state.upstream ? state.upstream.summary : []).some(function (s) { return s && s.limited && s.id === m.id; });
+    var upstreamTag = upLimited ? '<span class="tag upstream" title="Magpie 网关记录到该模型近期 429/5xx，已被排到候选末尾">上游受限</span>' : "";
     var prefCheck = '<input type="checkbox" class="pref-check"' + (m.preferred ? " checked" : "") + ' data-pref="' + esc(m.id) + '" title="设为偏好模型">';
     var coolCell = m.cooling
       ? '<span class="cool-time' + (m.reason ? " over" : "") + '">' + esc(until(m.until)) + "</span>"
@@ -654,7 +718,7 @@
       ? '<button class="ghost ok" data-enable="' + esc(m.id) + '" type="button">启用</button>'
       : '<button class="ghost danger" data-disable="' + esc(m.id) + '" type="button">禁用</button>';
     return '<div class="model-row' + (isActive ? " active" : "") + (m.disabled ? " disabled" : "") + '" data-model="' + esc(m.id) + '">' +
-      '<div class="mr-status">' + tag + preferredTag + '<span class="tag free" title="Free Switch 仅托管免费模型">免费</span></div>' +
+      '<div class="mr-status">' + tag + preferredTag + upstreamTag + '<span class="tag free" title="AutoSwitch 仅托管免费模型">免费</span></div>' +
       '<div class="mr-model"><div class="id">' + esc(m.id) + "</div>" + name + err + "</div>" +
       '<div class="mr-cool" title="冷却剩余时间"><span class="dim">冷却</span> ' + coolCell + "</div>" +
       '<div class="mr-last" title="最近一次请求结果">' + last + ' <span class="dim mono">' + (m.lastSuccessAt ? clock(m.lastSuccessAt) : "—") + "</span></div>" +
@@ -796,6 +860,72 @@
     var el = document.getElementById(id);
     if (el) el.hidden = !!isHidden;
   }
+  function upStatusTag(s) {
+    if (s.limited) {
+      return '<span class="up-tag bad">' + (s.rateLimited ? "限流 429" : "服务端错误") + " ×" + n(s.errors) + "</span>";
+    }
+    if (s.errors) return '<span class="up-tag warn">曾出错 ×' + n(s.errors) + "</span>";
+    return '<span class="up-tag ok">正常</span>';
+  }
+  function renderUpstream() {
+    var up = state.upstream;
+    if (!up) return;
+    var summary = up.summary || [];
+    var limited = summary.filter(function (s) { return s.limited; });
+    var stuck = up.stuck || [];
+    var quotas = up.quotas || [];
+    txt("upstream-badge", limited.length ? "· " + limited.length + " 受限" : (stuck.length ? "· " + stuck.length + " 卡住" : ""));
+    txt("up-at", up.at ? "· " + clock(up.at) : "· 尚未读取");
+    txt("up-window", Math.round((up.windowSeconds || 900) / 60));
+    txt("up-limited-count", limited.length ? "· " + limited.length : "");
+    txt("up-stuck-count", stuck.length ? "· " + stuck.length : "");
+    hidden("upstream-error", !up.error);
+    if (up.error) txt("upstream-error", "部分观测端点不可用（已降级，不影响切换）：" + up.error);
+
+    hidden("up-limited-empty", !!limited.length);
+    hidden("up-limited-table", !limited.length);
+    if (limited.length) {
+      htmlIfChanged("up-limited-rows", limited.map(function (s) {
+        return "<tr>" +
+          '<td class="up-id">' + esc(s.id) + "</td>" +
+          "<td>" + upStatusTag(s) + "</td>" +
+          '<td class="up-err" title="' + esc(s.lastError || "") + '">' + esc(String(s.lastError || "—").slice(0, 90)) + "</td>" +
+          '<td class="up-num">' + n(s.rateLimited) + "</td>" +
+          '<td class="up-num">' + n(s.serverErrors) + "</td>" +
+          '<td class="up-num">' + n(s.p50Ms) + " / " + n(s.p90Ms) + "ms</td>" +
+          '<td class="up-num">' + n(s.p50TtftMs) + "ms</td>" +
+          '<td class="up-num">' + (s.lastErrorAt ? clock(s.lastErrorAt) : "—") + "</td>" +
+          "</tr>";
+      }).join(""));
+    }
+
+    hidden("up-quota-empty", !!quotas.length);
+    hidden("up-quota-table", !quotas.length);
+    if (quotas.length) {
+      htmlIfChanged("up-quota-rows", quotas.map(function (q) {
+        return "<tr>" +
+          '<td class="up-id">' + esc(q.name + " / " + q.window) + "</td>" +
+          '<td class="up-num">' + esc(q.remaining) + " / " + esc(q.used + q.remaining) + "</td>" +
+          '<td><div class="up-meter' + (q.tight ? " tight" : "") + '"><i style="width:' + Math.max(0, Math.min(100, q.pct)) + '%"></i></div>' +
+          '<span class="dim">' + n(q.pct) + "%</span></td>" +
+          '<td class="up-num">' + esc(q.resetsAt ? String(q.resetsAt).slice(0, 16).replace("T", " ") : "—") + "</td>" +
+          "</tr>";
+      }).join(""));
+    }
+
+    hidden("up-stuck-empty", !!stuck.length);
+    hidden("up-stuck-table", !stuck.length);
+    if (stuck.length) {
+      htmlIfChanged("up-stuck-rows", stuck.map(function (a) {
+        return "<tr>" +
+          '<td class="up-id">' + esc(a.model) + "</td>" +
+          "<td>" + esc(a.agent) + "</td>" +
+          "<td>" + esc(a.phase) + "</td>" +
+          '<td class="up-num">' + esc(Math.round(a.ms / 1000) + "s") + "</td>" +
+          "</tr>";
+      }).join(""));
+    }
+  }
   function className(id, cls) {
     var el = document.getElementById(id);
     if (el) el.className = cls;
@@ -825,6 +955,9 @@
     txt("set-refresh", cfg.refreshSeconds ? String(cfg.refreshSeconds) : "—");
     txt("set-discovered", state.discoveredAt ? clock(state.discoveredAt) : (state.discoveryError ? "失败：" + state.discoveryError : "尚未发现"));
     txt("set-models", (Array.isArray(state.catalog) ? state.catalog.length : models.length) + " 个目录模型 · " + models.length + " 个免费");
+    txt("set-first-byte", cfg.firstByteTimeoutSeconds > 0 ? cfg.firstByteTimeoutSeconds + " 秒（超时即切下一个模型）" : "已禁用");
+    txt("set-upstream", "每 " + (cfg.upstreamRefreshSeconds || 20) + " 秒 · 统计窗口 " + Math.round((cfg.upstreamWindowSeconds || 900) / 60) + " 分钟 · 错误 ≥ " + (cfg.upstreamMinErrors || 2) + " 次降权");
+    txt("set-max-reset", (cfg.maxResetSeconds || 1800) + " 秒");
     var strategySelect = document.getElementById("strategy");
     if (strategySelect) strategySelect.value = cfg.strategy || "free";
     var paidPolicyEl = document.getElementById("paid-policy");
@@ -833,6 +966,7 @@
     if (paidWindowEl && document.activeElement !== paidWindowEl) paidWindowEl.value = cfg.paidWindow || "";
     var paidBalanceEl = document.getElementById("paid-min-balance");
     if (paidBalanceEl && document.activeElement !== paidBalanceEl) paidBalanceEl.value = cfg.paidMinBalance ? String(cfg.paidMinBalance) : "";
+    renderUpstream();
 
     if (state.discoveryError) {
       className("health-dot", "dot bad");
@@ -1138,6 +1272,18 @@
   });
   var provRefreshBtn = document.getElementById("prov-refresh");
   if (provRefreshBtn) provRefreshBtn.addEventListener("click", function () { action("/api/refresh"); });
+
+  // ---- 上游状态 dialog ----
+  var upstreamDialog = document.getElementById("upstream-dialog");
+  var upstreamBtn = document.getElementById("upstream-btn");
+  var upstreamClose = document.getElementById("upstream-close");
+  if (upstreamBtn && upstreamDialog) upstreamBtn.addEventListener("click", function () { upstreamDialog.showModal(); });
+  if (upstreamClose && upstreamDialog) upstreamClose.addEventListener("click", function () { upstreamDialog.close(); });
+  if (upstreamDialog) upstreamDialog.addEventListener("click", function (ev) {
+    if (ev.target === upstreamDialog) upstreamDialog.close();
+  });
+  var upstreamRefreshBtn = document.getElementById("upstream-refresh");
+  if (upstreamRefreshBtn) upstreamRefreshBtn.addEventListener("click", function () { action("/api/upstream", {}, "已刷新上游状态", "ok"); });
 
   // ---- 设置 dialog：运行信息、刷新、更新日志 ----
   var settingsDialog = document.getElementById("settings-dialog");

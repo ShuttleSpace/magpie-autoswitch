@@ -57,7 +57,7 @@ async function readBody(req, max = 4096) {
 // A tiny loopback-only console. It is read-only except for refreshing the
 // catalog and clearing a cooldown, so it needs no token; it never listens on
 // anything but 127.0.0.1.
-export function createConsole({ getState, refresh, clearCooldown, disable, enable, switch: setManualSwitch, cancelSwitch, setStrategy }) {
+export function createConsole({ getState, refresh, clearCooldown, disable, enable, switch: setManualSwitch, cancelSwitch, setStrategy, refreshUpstream }) {
   let server;
   let port = 0;
   let requestedPort = 0;
@@ -90,6 +90,10 @@ export function createConsole({ getState, refresh, clearCooldown, disable, enabl
       }
       if (req.method === "POST" && url.pathname === "/api/refresh") {
         await refresh?.(true);
+        return json(res, 200, await getState());
+      }
+      if (req.method === "POST" && url.pathname === "/api/upstream") {
+        await refreshUpstream?.(true);
         return json(res, 200, await getState());
       }
       if (req.method === "POST" && url.pathname === "/api/clear") {

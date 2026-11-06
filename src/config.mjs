@@ -148,6 +148,13 @@ export function loadConfig() {
     "modelGoneCooldownSeconds",
     "countryBlockCooldownSeconds",
     "maxCooldownSeconds",
+    "firstByteTimeoutSeconds",
+    "upstreamRefreshSeconds",
+    "upstreamWindowSeconds",
+    "upstreamMinErrors",
+    "upstreamMaxSoftCooldownSeconds",
+    "upstreamStuckMs",
+    "maxResetSeconds",
     "consolePort",
   ]) {
     const n = Number(config[key]);
@@ -156,6 +163,17 @@ export function loadConfig() {
   config.maxTries = Math.max(1, Math.min(20, Math.trunc(config.maxTries)));
   config.refreshSeconds = Math.max(5, Math.min(3600, config.refreshSeconds));
   config.consolePort = Math.max(0, Math.min(65535, Math.trunc(config.consolePort)));
+  const clampInt = (key, min, max) => {
+    const n = Number(config[key]);
+    config[key] = Number.isFinite(n) ? Math.max(min, Math.min(max, Math.trunc(n))) : DEFAULT_CONFIG[key];
+  };
+  clampInt("firstByteTimeoutSeconds", 0, 600);
+  clampInt("upstreamRefreshSeconds", 5, 3600);
+  clampInt("upstreamWindowSeconds", 60, 86400);
+  clampInt("upstreamMinErrors", 1, 50);
+  clampInt("upstreamMaxSoftCooldownSeconds", 10, 3600);
+  clampInt("upstreamStuckMs", 1000, 600000);
+  clampInt("maxResetSeconds", 60, 28800);
   if (!STRATEGIES.has(config.strategy)) config.strategy = DEFAULT_CONFIG.strategy;
   {
     const paid = Number(config.maxPaidTries);
@@ -195,6 +213,10 @@ function applyEnv(config) {
   if (paidWindow !== undefined) config.paidWindow = formatPaidWindow(paidWindow);
   const paidMinBalance = numberEnv(process.env.FREE_SWITCH_PAID_MIN_BALANCE);
   if (paidMinBalance !== undefined) config.paidMinBalance = Math.max(0, paidMinBalance);
+  const firstByte = numberEnv(process.env.FREE_SWITCH_FIRST_BYTE_TIMEOUT_SECONDS);
+  if (firstByte !== undefined) config.firstByteTimeoutSeconds = Math.max(0, Math.min(600, Math.trunc(firstByte)));
+  const upstreamRefresh = numberEnv(process.env.FREE_SWITCH_UPSTREAM_REFRESH_SECONDS);
+  if (upstreamRefresh !== undefined) config.upstreamRefreshSeconds = Math.max(5, Math.min(3600, Math.trunc(upstreamRefresh)));
   const refresh = numberEnv(process.env.FREE_SWITCH_REFRESH_SECONDS);
   if (refresh !== undefined) config.refreshSeconds = Math.max(5, Math.min(3600, refresh));
   const cooling = boolEnv(process.env.FREE_SWITCH_TRY_COOLING);

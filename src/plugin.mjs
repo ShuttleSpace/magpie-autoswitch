@@ -8,6 +8,10 @@ import {
   discoverFreeModels,
   buildModelCatalog,
   paidCandidates,
+  summarizeUpstream,
+  quotaPressure,
+  stuckCalls,
+  demoteUpstream,
   STRATEGIES,
   formatPaidWindow,
   parsePaidWindow,
@@ -18,7 +22,7 @@ import {
   shouldStop,
 } from "./core.mjs";
 import { appendTrace, configPath, loadConfig, loadState, readAllProviders, readCredits, readTraces, saveState, writeJSON, STATE_MAX_AGE } from "./config.mjs";
-import { fetchModelRows, gatewayAddress, postChat, readLimited } from "./gateway.mjs";
+import { fetchModelRows, fetchUsageRows, fetchConcurrency, fetchQuotas, gatewayAddress, postChat, readLimited } from "./gateway.mjs";
 import { createConsole } from "./console.mjs";
 
 const SDK = "@ai-sdk/openai-compatible";
@@ -210,7 +214,45 @@ function inspectStream(text) {
   return undefined;
 }
 
-async function peekStream(response) {
+// 首字节守卫：等待响应头 / 首个 SSE event 时限时；每收到一个 chunk 就重置，
+// 所以慢慢输出 reasoning 的模型不会被误杀，真正「挂着不发数据」的才超时。
+// 成功后必须 clear()，否则会中断已经开始的流式输出。
+function firstByteGuard(requestSignal, seconds) {
+  const ms = Number(seconds) > 0 ? Number(seconds) * 1000 : 0;
+  if (!ms) return { signal: requestSignal, clear() {}, reset() {}, timedOut: () => false, ms: 0 };
+  const controller = new AbortController();
+  let timer;
+  let expired = false;
+  const clear = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
+  const arm = () => {
+    if (expired) return;
+    clear();
+    timer = setTimeout(() => {
+      expired = true;
+      controller.abort(new Error(`first byte timed out after ${Math.round(ms / 1000)}s`));
+    }, ms);
+    timer.unref?.();
+  };
+  if (typeof AbortSignal.any !== "function" || !requestSignal) {
+    return { signal: requestSignal, clear() {}, reset() {}, timedOut: () => false, ms: 0 };
+  }
+  arm();
+  const composed = AbortSignal.any([requestSignal, controller.signal]);
+  return {
+    signal: composed,
+    clear,
+    reset: arm,
+    timedOut: () => expired,
+    ms,
+  };
+}
+
+async function peekStream(response, guard) {
   if (!response.body) return { ok: true, response };
   const reader = response.body.getReader();
   const chunks = [];
@@ -230,6 +272,7 @@ async function peekStream(response) {
       chunks.push(part.value);
       bytes += part.value.byteLength;
       text += decoder.decode(part.value, { stream: true });
+      guard?.reset();
       const verdict = inspectStream(text);
       if (verdict) {
         if (!verdict.ok) {
@@ -260,9 +303,11 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
   const state = loadState();
   const traces = readTraces(100);
   let cache = { models: [], catalog: [], at: 0, error: undefined };
+  let upstreamCache = { at: 0, fetching: null, error: undefined, rows: [], active: [], quotas: [], data: {} };
   let discovery;
   let lastLoggedCount = -1;
   let consoleTimer;
+  let upstreamTimer;
   let consoleStarting = false;
   let lastConsoleURL = "";
   let disposed = false;
@@ -276,6 +321,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     switch: (value) => setManualSwitch(typeof value === "string" ? value : value?.model),
     cancelSwitch: () => cancelManualSwitch(),
     setStrategy: (strategy) => setStrategy(strategy),
+    refreshUpstream: () => refreshUpstream(true),
   });
 
   function effectiveConfig() {
@@ -323,6 +369,52 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       }
     })();
     return discovery;
+  }
+
+  // 读取 Magpie 网关的只读观测端点。全部并行、独立超时、失败保留旧数据；
+  // 拿不到时 upstreamCache.error 只在控制台显示，不影响任何请求路径。
+  async function refreshUpstream(force = false) {
+    const config = effectiveConfig();
+    if (!force && upstreamCache.at && Date.now() - upstreamCache.at < config.upstreamRefreshSeconds * 1000) return upstreamCache;
+    if (upstreamCache.fetching) return upstreamCache.fetching;
+    upstreamCache.fetching = (async () => {
+      const results = await Promise.allSettled([fetchUsageRows(undefined, 500), fetchConcurrency(), fetchQuotas()]);
+      const rows = results[0].status === "fulfilled" ? results[0].value : undefined;
+      const concurrency = results[1].status === "fulfilled" ? results[1].value : undefined;
+      const quotas = results[2].status === "fulfilled" ? results[2].value : undefined;
+      const errors = results.filter((r) => r.status === "rejected").map((r) => String(r.reason?.message ?? r.reason));
+      const unavailable = results.filter((r) => r.status === "fulfilled" && r.value === undefined).length;
+      upstreamCache = {
+        at: Date.now(),
+        fetching: null,
+        rows: rows ?? upstreamCache.rows,
+        active: concurrency?.active ?? upstreamCache.active,
+        data: concurrency?.data ?? upstreamCache.data,
+        quotas: quotas ?? upstreamCache.quotas,
+        error: errors.length ? errors.join("; ") : unavailable ? `${unavailable} 个观测端点不可用（可能版本较旧）` : undefined,
+      };
+      return upstreamCache;
+    })();
+    return upstreamCache.fetching;
+  }
+
+  function upstreamView(config = effectiveConfig()) {
+    const now = Date.now();
+    return {
+      at: upstreamCache.at || null,
+      error: upstreamCache.error ?? null,
+      summary: summarizeUpstream(upstreamCache.rows, {
+        now,
+        windowMs: config.upstreamWindowSeconds * 1000,
+        minErrors: config.upstreamMinErrors,
+        maxSoftCooldownMs: config.upstreamMaxSoftCooldownSeconds * 1000,
+      }),
+      quotas: quotaPressure(upstreamCache.quotas),
+      active: upstreamCache.active,
+      data: upstreamCache.data,
+      stuck: stuckCalls(upstreamCache.active, config.upstreamStuckMs),
+      windowSeconds: config.upstreamWindowSeconds,
+    };
   }
 
   function markCooldown(candidate, cooldown, status, error) {
@@ -468,12 +560,15 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     }
     const selection = selectCandidates(models, state.models, needs, config, Date.now(), state.disabledProviders);
     const strategy = STRATEGIES.has(config.strategy) ? config.strategy : "free";
-    let ordered = selection.ordered;
+    // 上游雷达：只把观察到近期 429/5xx 的模型排到末尾，不删除候选。
+    // 数据来自后台缓存，拿不到时 summary 为空 → demoteUpstream 原样返回。
+    const upstream = upstreamView(config);
+    let ordered = demoteUpstream(selection.ordered, upstream.summary, Date.now());
     const max = Math.max(1, Math.min(20, Math.trunc(Number(config.maxTries) || 6)));
     if (strategy === "paid-first" || strategy === "free-first") {
       // 策略并入付费候选。付费候选受 maxPaidTries 严格限制；合并后整体按
       // maxTries 切片，保证单次请求总尝试数有上限，避免失控计费。
-      const paid = paidCandidates(catalog, state.models, needs, config, Date.now(), state.disabledProviders, readCredits())
+      const paid = demoteUpstream(paidCandidates(catalog, state.models, needs, config, Date.now(), state.disabledProviders, readCredits()), upstream.summary, Date.now())
         .filter((m) => !forced || m.id !== forced.id)
         .slice(0, Math.max(0, Math.trunc(Number(config.maxPaidTries) || 0)));
       ordered = strategy === "paid-first" ? [...paid, ...ordered] : [...ordered, ...paid];
@@ -509,12 +604,19 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       };
       trace.attempts.push(attempt);
       const upstreamBody = prepareBody(body, candidate);
+      // 首字节守卫：上游 429/5xx 常常几十秒甚至几分钟不回首个 event。
+      // 超时按网络错误处理（短冷却 + 立刻切下一个），成功则清除守卫，
+      // 不能中断已经开始输出 token 的流。
+      const guard = firstByteGuard(request.signal, config.firstByteTimeoutSeconds);
       let response;
       try {
-        response = await postChat(upstreamBody, { signal: request.signal, session: session || undefined });
+        response = await postChat(upstreamBody, { signal: guard.signal, session: session || undefined });
       } catch (error) {
+        const timedOut = guard.timedOut();
+        guard.clear();
         attempt.ms = Date.now() - attemptStarted;
         attempt.error = String(error?.message ?? error);
+        attempt.timedOut = timedOut;
         if (request.signal.aborted) {
           trace.aborted = true;
           break;
@@ -527,16 +629,19 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
           config,
         });
         if (cooldown) {
-          attempt.reason = cooldown.reason;
+          attempt.reason = timedOut ? "first byte timeout" : cooldown.reason;
           attempt.cooldownUntil = cooldown.until;
-          markCooldown(candidate, cooldown, 0, attempt.error);
+          markCooldown(candidate, { ...cooldown, reason: attempt.reason }, 0, attempt.error);
         }
         last = { status: 0, text: attempt.error };
-        log(input, "warn", `${candidate.id}: ${attempt.error}`);
+        log(input, "warn", `${candidate.id}: ${timedOut ? "first byte timeout" : attempt.error}`);
         continue;
       }
+      // 非流式：响应头到达即视为首字节已到，不能让守卫杀掉正在生成的长回复。
+      if (upstreamBody.stream !== true) guard.clear();
 
-      attempt.status = response.status;
+      try {
+        attempt.status = response.status;
       if (!response.ok) {
         let text;
         try {
@@ -571,7 +676,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       }
 
       if (upstreamBody.stream === true) {
-        const peek = await peekStream(response);
+        const peek = await peekStream(response, guard);
         attempt.ms = Date.now() - attemptStarted;
         if (!peek.ok) {
           attempt.error = peek.error;
@@ -651,9 +756,10 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       finishTrace(trace);
       log(input, "info", `${candidate.id} answered after ${trace.attempts.length} attempt${trace.attempts.length === 1 ? "" : "s"}`);
       return decorate(new Response(text, { status: response.status, statusText: response.statusText, headers: response.headers }), candidate, trace);
+      } finally {
+        guard.clear();
+      }
     }
-
-    trace.exhausted = !trace.aborted;
     trace.error = last?.text?.slice(0, 500) || last?.error?.message || last?.error || "all candidates failed";
     finishTrace(trace);
     const status = trace.attempts.length && trace.attempts.every((a) => a.status === 429) ? 429 : 502;
@@ -884,7 +990,13 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         paidWindow: config.paidWindow,
         paidMinBalance: config.paidMinBalance,
         paidWindowActive,
+        firstByteTimeoutSeconds: config.firstByteTimeoutSeconds,
+        upstreamRefreshSeconds: config.upstreamRefreshSeconds,
+        upstreamWindowSeconds: config.upstreamWindowSeconds,
+        upstreamMinErrors: config.upstreamMinErrors,
+        maxResetSeconds: config.maxResetSeconds,
       },
+      upstream: upstreamView(config),
       disabledProviders: Array.isArray(state.disabledProviders) ? [...state.disabledProviders] : [],
       manualSwitch: state.manualSwitch ?? null,
       allProviders: (() => {
@@ -956,13 +1068,19 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
   consoleTimer.unref?.();
   const kick = setTimeout(syncConsole, 0);
   kick.unref?.();
+  const upstreamKick = setTimeout(() => { refreshUpstream(true).catch(() => {}); }, 0);
+  upstreamKick.unref?.();
+  upstreamTimer = setInterval(() => { refreshUpstream().catch(() => {}); }, Math.max(5, effectiveConfig().upstreamRefreshSeconds) * 1000);
+  upstreamTimer.unref?.();
 
   return {
     lifecycle: {
       async dispose() {
         disposed = true;
         clearInterval(consoleTimer);
+        clearInterval(upstreamTimer);
         clearTimeout(kick);
+        clearTimeout(upstreamKick);
         await console.stop();
       },
     },

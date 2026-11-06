@@ -6,7 +6,7 @@ export const PROVIDER = "free-switch";
 export const SELF_PROVIDERS = new Set([PROVIDER, `${PROVIDER}-plugin`]);
 
 // Bump alongside RELEASE_NOTES.md when shipping a change.
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 // Auto-switch strategy: how paid models participate in the failover pool.
 // "free"        — paid models are never tried automatically (default).
@@ -49,6 +49,17 @@ export const DEFAULT_CONFIG = {
   paidMinBalance: 0,
   maxTries: 6,
   refreshSeconds: 60,
+  // 单次尝试的首字节超时（秒）。上游 429/5xx 常常要几十秒甚至几分钟才返回，
+  // 超时即视为网络错误并切下一个候选；0 = 禁用。
+  firstByteTimeoutSeconds: 25,
+  // 上游健康雷达：只读取 Magpie 的 /v1/magpie/usage/requests、concurrency、quotas。
+  upstreamRefreshSeconds: 20,
+  upstreamWindowSeconds: 900,
+  upstreamMinErrors: 2,
+  upstreamMaxSoftCooldownSeconds: 300,
+  upstreamStuckMs: 30000,
+  // 上游 Retry-After 的独立上限（秒），防止一次限流把模型冻几小时。
+  maxResetSeconds: 1800,
   cooldownSeconds: 60,
   serverErrorCooldownSeconds: 30,
   authErrorCooldownSeconds: 300,
@@ -494,6 +505,13 @@ function future(until, now, maxMs) {
   return { until: now + ms, seconds: Math.ceil(ms / 1000) };
 }
 
+// 上游给的 Retry-After 可能是几小时（实测 5h），一次波动就把模型冻死；
+// 用独立上限钳制，backoff 的 maxCooldownSeconds 保持不变。
+function resetCapMs(config, maxMs) {
+  const cap = Number(config?.maxResetSeconds) > 0 ? Number(config.maxResetSeconds) * 1000 : 1800_000;
+  return Math.max(1000, Math.min(maxMs, cap));
+}
+
 // Reads every reset hint the vendors are known to send, then the common
 // "try again in 20s" / "resets at <timestamp>" shapes in the error body.
 export function parseReset(headers, bodyText, now = Date.now(), maxMs = DEFAULT_CONFIG.maxCooldownSeconds * 1000) {
@@ -588,8 +606,9 @@ export function cooldownFor({ status, headers, bodyText, error, previousFailures
     const ms = Math.max(1000, (Number(config.countryBlockCooldownSeconds) || 24 * 60 * 60) * 1000);
     return { until: now + ms, seconds: Math.ceil(ms / 1000), reason: "区域不可用", failures, disabled: true };
   }
+  if (status === 499) return undefined; // 调用方取消，不是上游失败
   if (status === 429) {
-    const reset = parseReset(headers, bodyText, now, maxMs);
+    const reset = parseReset(headers, bodyText, now, resetCapMs(config, maxMs));
     if (reset) return { ...reset, reason: reset.source || "rate limit", failures };
     return backoff(config.cooldownSeconds, "rate limit");
   }
@@ -600,7 +619,7 @@ export function cooldownFor({ status, headers, bodyText, error, previousFailures
     return undefined;
   }
   if (status === 0 || status === 408 || status === 409 || status === 425 || status >= 500) {
-    const reset = parseReset(headers, bodyText, now, maxMs);
+    const reset = parseReset(headers, bodyText, now, resetCapMs(config, maxMs));
     if (reset) return { ...reset, reason: reset.source || "retry hint", failures };
     return backoff(config.serverErrorCooldownSeconds, error?.message || `HTTP ${status || "network"}`);
   }
@@ -611,4 +630,140 @@ export function cooldownFor({ status, headers, bodyText, error, previousFailures
 export function cooldownSummary(entry, now = Date.now()) {
   if (!cooldownActive(entry, now)) return { cooling: false, seconds: 0, until: entry?.until ?? null };
   return { cooling: true, seconds: Math.max(0, Math.ceil((entry.until - now) / 1000)), until: entry.until };
+}
+
+// ---- 上游健康雷达（纯函数，只读 Magpie 网关记录）----
+//
+// /v1/magpie/usage/requests 每次请求有两行：外层 agent=opencode/provider=
+// free-switch，内层 agent=free-switch/provider=<上游>。只统计内层。
+// status=499 是调用方取消，不是上游失败，必须排除。
+export function summarizeUpstream(rows, options = {}) {
+  const now = Number(options.now) || Date.now();
+  const windowMs = Math.max(1000, Number(options.windowMs) || 900_000);
+  const minErrors = Math.max(1, Math.trunc(Number(options.minErrors) || 2));
+  const maxSoft = Math.max(1000, Number(options.maxSoftCooldownMs) || 300_000);
+  const groups = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || row.agent !== PROVIDER) continue;
+    const provider = text(row.provider);
+    if (!provider || provider === PROVIDER || SELF_PROVIDERS.has(provider)) continue;
+    const id = text(row.req) || `${provider}/${text(row.model) || "?"}`;
+    const at = Date.parse(text(row.t));
+    if (!Number.isFinite(at) || now - at > windowMs || at > now + 60_000) continue;
+    const status = Number(row.status) || 0;
+    if (status === 499) continue;
+    let g = groups.get(id);
+    if (!g) {
+      g = { id, provider, model: text(row.model) || id.slice(provider.length + 1), calls: 0, errors: 0, rateLimited: 0, serverErrors: 0, ms: [], ttft: [], lastStatus: null, lastError: null, lastErrorAt: 0, lastAt: 0, lastOkAt: 0, errTypes: new Set() };
+      groups.set(id, g);
+    }
+    g.calls++;
+    g.lastAt = Math.max(g.lastAt, at);
+    const ms = Number(row.ms);
+    if (Number.isFinite(ms) && ms >= 0) g.ms.push(ms);
+    const ttft = Number(row.ttft_ms);
+    if (Number.isFinite(ttft) && ttft >= 0) g.ttft.push(ttft);
+    if (status === 200) {
+      g.lastOkAt = Math.max(g.lastOkAt, at);
+      g.lastStatus = 200;
+      continue;
+    }
+    const rate = status === 429 || status === 408 || status === 425;
+    const server = status === 0 || status >= 500;
+    if (!rate && !server && status < 400) continue;
+    g.errors++;
+    if (rate) g.rateLimited++;
+    if (server) g.serverErrors++;
+    if (row.err_type) g.errTypes.add(text(row.err_type));
+    if (at >= g.lastErrorAt) {
+      g.lastErrorAt = at;
+      g.lastStatus = status;
+      g.lastError = text(row.err) || `HTTP ${status}`;
+    }
+  }
+  const percentile = (list, p) => {
+    if (!list.length) return 0;
+    const sorted = [...list].sort((a, b) => a - b);
+    return Math.round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))]);
+  };
+  const out = [];
+  for (const g of groups.values()) {
+    // 最近一次错误之后已经成功过 → 不再视为受限。
+    const limited = g.errors >= minErrors && g.lastErrorAt > g.lastOkAt;
+    const softMs = Math.min(maxSoft, 30_000 * 2 ** Math.min(g.errors - 1, 6));
+    out.push({
+      id: g.id,
+      provider: g.provider,
+      model: g.model,
+      calls: g.calls,
+      errors: g.errors,
+      rateLimited: g.rateLimited,
+      serverErrors: g.serverErrors,
+      lastStatus: g.lastStatus,
+      lastError: g.lastError,
+      lastErrorAt: g.lastErrorAt || null,
+      lastAt: g.lastAt || null,
+      errTypes: [...g.errTypes],
+      p50Ms: percentile(g.ms, 0.5),
+      p90Ms: percentile(g.ms, 0.9),
+      p50TtftMs: percentile(g.ttft, 0.5),
+      limited,
+      softUntil: limited ? g.lastErrorAt + softMs : 0,
+    });
+  }
+  out.sort((a, b) => (b.limited - a.limited) || (b.errors - a.errors) || a.id.localeCompare(b.id));
+  return out;
+}
+
+export function quotaPressure(quotas, options = {}) {
+  const tightPct = Number(options.tightPct) || 15;
+  const out = [];
+  for (const q of Array.isArray(quotas) ? quotas : []) {
+    for (const w of Array.isArray(q?.windows) ? q.windows : []) {
+      const used = Number(w.used);
+      const remaining = Number(w.remaining);
+      if (!Number.isFinite(used) || !Number.isFinite(remaining)) continue;
+      const total = used + remaining;
+      const pct = total > 0 ? Math.round((remaining / total) * 100) : 100;
+      out.push({
+        provider: text(q.provider),
+        name: text(q.name) || text(q.provider),
+        window: text(w.name) || "quota",
+        used,
+        remaining,
+        pct,
+        resetsAt: w.resetsAt ?? null,
+        tight: pct < tightPct,
+      });
+    }
+  }
+  out.sort((a, b) => a.pct - b.pct);
+  return out;
+}
+
+export function stuckCalls(active, thresholdMs = 30_000) {
+  return (Array.isArray(active) ? active : [])
+    .filter((a) => a && Number(a.ms) > thresholdMs && (a.phase === "upstream" || !a.phase))
+    .map((a) => ({
+      id: a.id,
+      agent: text(a.agent),
+      provider: text(a.provider),
+      model: text(a.model),
+      ms: Number(a.ms),
+      phase: text(a.phase) || "upstream",
+      session: text(a.session),
+    }))
+    .sort((a, b) => b.ms - a.ms);
+}
+
+// 把上游刚报错的模型排到候选末尾（只排序，不删除、不写 state）。
+export function demoteUpstream(ordered, summary, now = Date.now()) {
+  const limited = new Set((Array.isArray(summary) ? summary : []).filter((s) => s?.limited && (!s.softUntil || s.softUntil > now)).map((s) => s.id));
+  if (!limited.size) return Array.isArray(ordered) ? ordered : [];
+  const keep = [];
+  const late = [];
+  for (const m of Array.isArray(ordered) ? ordered : []) {
+    (limited.has(m?.id) ? late : keep).push(m);
+  }
+  return [...keep, ...late];
 }

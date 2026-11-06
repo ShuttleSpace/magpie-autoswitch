@@ -17,6 +17,10 @@ import {
   parseReset,
   formatPaidWindow,
   withinPaidWindow,
+  summarizeUpstream,
+  quotaPressure,
+  stuckCalls,
+  demoteUpstream,
   selectCandidates,
   shouldStop,
   supports,
@@ -388,4 +392,79 @@ test("paidCandidates skips providers whose balance is below the floor", () => {
     ["zen/b", "cn/glm"],
     "unknown balance is not blocked"
   );
+});
+
+test("summarizeUpstream ignores outer rows and 499, groups by req", () => {
+  const now = Date.parse("2026-11-06T14:00:00+08:00");
+  const rows = [
+    { agent: "opencode", provider: "free-switch", model: "auto", req: "free-switch/auto", status: 429, t: "2026-11-06T13:59:00+08:00", ms: 100, err: "outer", agent2: 1 },
+    { agent: "free-switch", provider: "workbuddy-ai", model: "hy3", req: "workbuddy-ai/hy3", status: 429, t: "2026-11-06T13:55:00+08:00", ms: 60000, ttft_ms: 30000, err: "too many requests", err_type: "api_error" },
+    { agent: "free-switch", provider: "workbuddy-ai", model: "hy3", req: "workbuddy-ai/hy3", status: 502, t: "2026-11-06T13:56:00+08:00", ms: 40000, err: "bad gateway", err_type: "stream_error" },
+    { agent: "free-switch", provider: "workbuddy-ai", model: "hy3", req: "workbuddy-ai/hy3", status: 499, t: "2026-11-06T13:57:00+08:00", ms: 1300, err: "the agent canceled the request" },
+    { agent: "free-switch", provider: "cline", model: "gemma:free", req: "cline/gemma:free", status: 200, t: "2026-11-06T13:58:00+08:00", ms: 5000, ttft_ms: 800 },
+  ];
+  const out = summarizeUpstream(rows, { now, windowMs: 900_000, minErrors: 2 });
+  assert.equal(out.length, 2, "outer free-switch row and 499 are excluded");
+  const hy3 = out.find((s) => s.id === "workbuddy-ai/hy3");
+  assert.equal(hy3.calls, 2, "499 (caller cancel) is not counted as an upstream call");
+  assert.equal(hy3.errors, 2);
+  assert.equal(hy3.rateLimited, 1);
+  assert.equal(hy3.serverErrors, 1);
+  assert.equal(hy3.limited, true);
+  assert.equal(hy3.lastError, "bad gateway");
+  assert.equal(hy3.softUntil, hy3.lastErrorAt + 60_000, "soft demotion is 30s * 2^(errors-1)");
+  assert.ok(hy3.softUntil < now, "an old error no longer demotes");
+  assert.ok(hy3.errTypes.includes("stream_error"));
+  assert.equal(hy3.p50TtftMs, 30000);
+  const cline = out.find((s) => s.id === "cline/gemma:free");
+  assert.equal(cline.limited, false);
+  assert.equal(cline.errors, 0);
+});
+
+test("summarizeUpstream clears limited after a newer success and respects the window", () => {
+  const now = Date.parse("2026-11-06T14:00:00+08:00");
+  const base = { agent: "free-switch", provider: "zen", model: "a", req: "zen/a" };
+  const out = summarizeUpstream([
+    { ...base, status: 429, t: "2026-11-06T13:50:00+08:00", ms: 1000, err: "limit" },
+    { ...base, status: 429, t: "2026-11-06T13:51:00+08:00", ms: 1000, err: "limit" },
+    { ...base, status: 200, t: "2026-11-06T13:55:00+08:00", ms: 1000 },
+  ], { now, windowMs: 900_000, minErrors: 2 });
+  assert.equal(out[0].limited, false, "a newer success clears the penalty");
+  const old = summarizeUpstream([
+    { ...base, status: 429, t: "2026-11-06T13:00:00+08:00", ms: 1000, err: "limit" },
+  ], { now, windowMs: 900_000, minErrors: 1 });
+  assert.equal(old.length, 0, "rows outside the window are ignored");
+});
+
+test("quotaPressure and stuckCalls", () => {
+  const q = quotaPressure([{ provider: "workbuddy-ai", name: "WorkBuddy", windows: [{ name: "Extra credits", used: 98, remaining: 2 }, { name: "Credits", used: 5, remaining: 95, resetsAt: "2026-11-30T15:59:59Z" }] }]);
+  assert.equal(q[0].window, "Extra credits");
+  assert.equal(q[0].pct, 2);
+  assert.equal(q[0].tight, true);
+  assert.equal(q[1].tight, false);
+  const stuck = stuckCalls([
+    { id: 1, agent: "free-switch", provider: "workbuddy-ai", model: "workbuddy-ai/hy3", ms: 120000, phase: "upstream" },
+    { id: 2, agent: "opencode", provider: "free-switch", model: "free-switch/auto", ms: 10, phase: "upstream" },
+  ], 30_000);
+  assert.equal(stuck.length, 1);
+  assert.equal(stuck[0].ms, 120000);
+});
+
+test("demoteUpstream moves limited models to the tail without dropping them", () => {
+  const now = 1_700_000_000_000;
+  const a = { id: "zen/a" }, b = { id: "zen/b" }, c = { id: "zen/c" };
+  const summary = [{ id: "zen/a", limited: true, softUntil: now + 60000 }];
+  assert.deepEqual(demoteUpstream([a, b, c], summary, now).map((m) => m.id), ["zen/b", "zen/c", "zen/a"]);
+  assert.deepEqual(demoteUpstream([a, b], [{ id: "zen/a", limited: true, softUntil: now - 1 }], now).map((m) => m.id), ["zen/a", "zen/b"], "expired soft cooldown is ignored");
+  assert.deepEqual(demoteUpstream([a, b], [], now), [a, b]);
+});
+
+test("499 is never a cooldown and long Retry-After is capped", () => {
+  const now = 1_700_000_000_000;
+  const config = { ...DEFAULT_CONFIG, maxResetSeconds: 1800, maxCooldownSeconds: 28800 };
+  assert.equal(cooldownFor({ status: 499, headers: new Headers({}), bodyText: "", now, config }), undefined);
+  const long = cooldownFor({ status: 429, headers: new Headers({ "retry-after": "18000" }), bodyText: "", now, config });
+  assert.equal(long.seconds, 1800, "a 5h Retry-After is capped at 30min");
+  const short = cooldownFor({ status: 429, headers: new Headers({ "retry-after": "20" }), bodyText: "", now, config });
+  assert.equal(short.seconds, 20);
 });

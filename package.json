@@ -1,6 +1,6 @@
 {
   "name": "magpie-autoswitch",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "AutoSwitch for Magpie: one model that automatically fails over across free and (optionally) paid models of every enabled provider, with cooldown memory, a paid-policy switch, and a local web console",
   "type": "module",
   "main": "./index.mjs",
@@ -36,6 +36,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "pack": "node scripts/pack.mjs"
+    "pack": "node scripts/pack.mjs",
+    "report:upstream": "node scripts/upstream-report.mjs"
   }
 }

@@ -2,6 +2,22 @@
 
 版本号与 `package.json` / `src/core.mjs` 的 `VERSION` 保持一致；控制台「⚙ 设置」里会显示当前版本。
 
+## 0.5.0 — 2026-11-06
+
+### 上游健康雷达与快速失败
+- **问题**：Magpie 网关其实记录了每次调用的上游响应，但插件只靠「自己发出的请求失败」回溯冷却，导致两类体验问题：① 上游 429/5xx 常在 30s–3m+ 才返回（实测 `429 after 3m23s`、`502 after 14m3s`），而插件对单次尝试没有超时，`peekStream` 等首字节也无 deadline，`maxTries: 6` 串行放大到十几分钟；② 一次失败后 `Retry-After` / 指数退避把模型冻几小时（实测 ~7.9h、连续失败 64 次），下一次请求可用候选骤减，于是「提示恢复」后立刻断开。
+- **只读可观测**：新增 `fetchUsageRows` / `fetchConcurrency` / `fetchQuotas`，读取 `/v1/magpie/usage/requests`（含 `err` 上游错误原文、`err_type`、`ttft_ms`）、`/v1/magpie/concurrency`（在飞请求与 `phase`）、`/v1/magpie/quotas`（配额窗口）。全部并行、独立 5s 超时、失败静默降级，拿不到就完全退回原行为。
+- **纯函数聚合**：`summarizeUpstream` 按 `provider/model` 统计近期 429/5xx、p50/p90 延迟、TTFT、最后错误；只统计 `agent=free-switch` 的内层调用，**排除 499（调用方取消）**。`quotaPressure` 标记剩余 <15% 的配额窗口，`stuckCalls` 找出卡住的在飞请求，`demoteUpstream` 把受限模型排到候选末尾（不删除、不写 state）。有单测覆盖。
+- **首字节超时**：`firstByteTimeoutSeconds`（默认 25s，0=禁用）。等待响应头 / 首个 SSE event 限时，每收到一个 chunk 重置计时，所以慢慢输出 reasoning 的模型不会被误杀；成功后清除守卫，不中断已开始的输出。超时按网络错误处理（短冷却 + 立刻切下一个）。端到端测试：挂死的上游在 1s 内被切走，下一个模型正常回答。
+- **499 不误伤 + Retry-After 上限**：`cooldownFor(499)` 直接返回 `undefined`；新增 `maxResetSeconds`（默认 1800s = 30min）钳制上游给的超长 `Retry-After`，避免一次限流把模型冻几小时；`maxCooldownSeconds` 不变。
+- **控制台**：顶栏「📡 上游状态」按钮打开 dialog，展示受限模型表（状态、最近错误、429/5xx 次数、p50/p90、TTFT）、配额窗口进度、卡住的在飞请求，可一键刷新；模型行对被降权的模型显示「上游受限」tag；设置里显示首字节超时、雷达窗口、Retry-After 上限等运行参数。
+- **离线诊断**：`npm run report:upstream -- --hours 24`（或 `--json`）读 `usage.jsonl` / `app.log` / `traces.jsonl` / `state.json`，零运行时风险。实测本机 24h：上游错误 99 次、调用方取消 18 次、慢尝试(>30s) 81 次、6 个受限模型、4 个仍被冻（最长 7.9h）。
+- 详细设计见 `docs/upstream-health-design.md`。
+
+### 注意
+- `/v1/magpie/*` 是 Magpie 内网端点（不在 `/` 的 API 清单里），跨版本可能变化；插件全部按「可缺失」处理。
+- 免费 failover 候选池与「付费需显式开启/手动切换」的安全边界不变；软降权只调整顺序，不改变候选成员。
+
 ## 0.4.0 — 2026-11-06
 
 ### 更名与图标

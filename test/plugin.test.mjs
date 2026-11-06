@@ -22,6 +22,17 @@ async function fakeGateway(handler) {
       res.end(JSON.stringify({ data: rows }));
       return;
     }
+    if (handler.magpie && req.url.startsWith("/v1/magpie/")) {
+      const value = handler.magpie(req.url);
+      if (value === undefined) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end("{}");
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(value));
+      return;
+    }
     if (req.url === "/v1/chat/completions") {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
@@ -37,7 +48,10 @@ async function fakeGateway(handler) {
   return {
     calls,
     url: `127.0.0.1:${port}`,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => new Promise((resolve) => {
+      server.close(resolve);
+      server.closeAllConnections?.();
+    }),
   };
 }
 
@@ -474,6 +488,10 @@ test("console disable / enable / switch endpoints route to the right handler", a
       state.strategyBody = body;
       return { ok: true };
     },
+    refreshUpstream: async (force) => {
+      state.upstreamForced = force;
+      return { ok: true };
+    },
   });
   const url = await consoleServer.start(0);
   let res = await fetch(`${url}/api/disable`, {
@@ -512,6 +530,10 @@ test("console disable / enable / switch endpoints route to the right handler", a
   });
   assert.equal(res.status, 200);
   assert.deepEqual(state.strategyBody, { strategy: "paid-first", maxPaidTries: 3, paidWindow: "22:00-06:00", paidMinBalance: 20 });
+
+  res = await fetch(`${url}/api/upstream`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(res.status, 200);
+  assert.equal(state.upstreamForced, true, "the upstream refresh endpoint forces a fresh read");
 
   // unknown endpoint -> 404
   res = await fetch(`${url}/api/nope`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
@@ -564,6 +586,79 @@ test("manual switch through the real console wiring forces the next request", as
   assert.equal(reply.headers.get("x-free-switch-model"), "zen/b", "the forced model is used first");
   assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/b"]);
 
+  await hooks.lifecycle.dispose();
+  await gateway.close();
+});
+
+test("a hanging upstream is cut off and the next candidate answers", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "free-switch", "config.json"), JSON.stringify({ firstByteTimeoutSeconds: 1, refreshSeconds: 5, cooldownSeconds: 1, serverErrorCooldownSeconds: 1 }));
+  const gateway = await fakeGateway({
+    models: models(),
+    chat(req, res, body) {
+      if (body.model === "zen/a") return; // never answers: hang until aborted
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "chat-1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+    },
+  });
+  process.env.MAGPIE_ADDR = gateway.url;
+  const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+  const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+  const started = Date.now();
+  const reply = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+  });
+  const elapsed = Date.now() - started;
+  assert.equal(reply.status, 200);
+  assert.equal(reply.headers.get("x-free-switch-model"), "zen/b");
+  assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/a", "zen/b"]);
+  assert.ok(elapsed < 5000, `the timeout should cut the hang quickly, took ${elapsed}ms`);
+  await hooks.lifecycle.dispose();
+  await gateway.close();
+});
+
+test("upstream health from magpie demotes a limited model and is exposed in state", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "free-switch", "config.json"), JSON.stringify({ refreshSeconds: 5, upstreamRefreshSeconds: 5, upstreamMinErrors: 1, firstByteTimeoutSeconds: 0 }));
+  const now = Date.now();
+  const iso = (msBack) => new Date(now - msBack).toISOString();
+  const gateway = await fakeGateway({
+    models: models(),
+    magpie(url) {
+      if (url.startsWith("/v1/magpie/usage/requests")) {
+        return { rows: [
+          { agent: "free-switch", provider: "opencode-zen-free", model: "a", req: "zen/a", status: 429, ms: 60000, ttft_ms: 30000, err: "rate limited", err_type: "api_error", t: iso(3_000) },
+          { agent: "opencode", provider: "free-switch", model: "auto", req: "free-switch/auto", status: 429, ms: 100, err: "outer", t: iso(30_000) },
+          { agent: "free-switch", provider: "opencode-zen-free", model: "a", req: "zen/a", status: 499, ms: 1000, err: "canceled", t: iso(20_000) },
+        ] };
+      }
+      if (url.startsWith("/v1/magpie/concurrency")) return { active: [{ id: 1, agent: "free-switch", provider: "opencode-zen-free", model: "zen/a", ms: 120000, phase: "upstream" }], data: {}, requests: 1 };
+      if (url.startsWith("/v1/magpie/quotas")) return { data: [{ provider: "zen", name: "Zen", windows: [{ name: "Credits", used: 98, remaining: 2, resetsAt: "2026-12-01T00:00:00Z" }] }] };
+      return undefined;
+    },
+    chat(req, res, body) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "chat-1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+    },
+  });
+  process.env.MAGPIE_ADDR = gateway.url;
+  const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+  const reply = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(reply.status, 200);
+  assert.equal(reply.headers.get("x-free-switch-model"), "zen/b", "the recently-429 model is tried last");
+  assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/b"]);
   await hooks.lifecycle.dispose();
   await gateway.close();
 });

@@ -30,6 +30,11 @@
   }
   * { box-sizing: border-box; }
   html, body { min-height: 100%; }
+  /* 任意 dialog 打开时锁定底层页面滚动：原生 modal 不拦截背景的滚轮/触控板，
+     不锁的话在 dialog 上滚动会带动底层页面。scrollbar-gutter 防止滚动条消失
+     引起的 15px 抖动。dialog 内部仍可独立滚动。 */
+  html { scrollbar-gutter: stable; }
+  html.no-scroll { overflow: hidden; }
   body {
     margin: 0;
     color: var(--ink);

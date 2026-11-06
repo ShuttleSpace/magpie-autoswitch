@@ -1,8 +1,13 @@
   var provDialog = document.getElementById("prov-dialog");
   var provPickerBtn = document.getElementById("prov-picker-btn");
   var provDialogClose = document.getElementById("prov-dialog-close");
-  if (provPickerBtn && provDialog) provPickerBtn.addEventListener("click", function () { provDialog.showModal(); });
+  // dialog 打开时锁底层页面滚动，关闭（含 Esc / 点遮罩）时解锁。
+  function syncScrollLock() {
+    document.documentElement.classList.toggle("no-scroll", !!document.querySelector("dialog[open]"));
+  }
+  if (provPickerBtn && provDialog) provPickerBtn.addEventListener("click", function () { provDialog.showModal(); syncScrollLock(); });
   if (provDialogClose && provDialog) provDialogClose.addEventListener("click", function () { provDialog.close(); });
+  if (provDialog) provDialog.addEventListener("close", syncScrollLock);
   if (provDialog) provDialog.addEventListener("click", function (ev) {
     if (ev.target === provDialog) provDialog.close();
   });
@@ -27,8 +32,9 @@
   var upstreamDialog = document.getElementById("upstream-dialog");
   var upstreamBtn = document.getElementById("upstream-btn");
   var upstreamClose = document.getElementById("upstream-close");
-  if (upstreamBtn && upstreamDialog) upstreamBtn.addEventListener("click", function () { upstreamDialog.showModal(); });
+  if (upstreamBtn && upstreamDialog) upstreamBtn.addEventListener("click", function () { upstreamDialog.showModal(); syncScrollLock(); });
   if (upstreamClose && upstreamDialog) upstreamClose.addEventListener("click", function () { upstreamDialog.close(); });
+  if (upstreamDialog) upstreamDialog.addEventListener("close", syncScrollLock);
   if (upstreamDialog) upstreamDialog.addEventListener("click", function (ev) {
     if (ev.target === upstreamDialog) upstreamDialog.close();
   });
@@ -39,8 +45,9 @@
   var settingsDialog = document.getElementById("settings-dialog");
   var settingsBtn = document.getElementById("settings-btn");
   var settingsClose = document.getElementById("settings-close");
-  if (settingsBtn && settingsDialog) settingsBtn.addEventListener("click", function () { settingsDialog.showModal(); });
+  if (settingsBtn && settingsDialog) settingsBtn.addEventListener("click", function () { settingsDialog.showModal(); syncScrollLock(); });
   if (settingsClose && settingsDialog) settingsClose.addEventListener("click", function () { settingsDialog.close(); });
+  if (settingsDialog) settingsDialog.addEventListener("close", syncScrollLock);
   if (settingsDialog) settingsDialog.addEventListener("click", function (ev) {
     if (ev.target === settingsDialog) settingsDialog.close();
   });

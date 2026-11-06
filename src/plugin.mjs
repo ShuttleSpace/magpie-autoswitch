@@ -9,6 +9,9 @@ import {
   buildModelCatalog,
   paidCandidates,
   STRATEGIES,
+  formatPaidWindow,
+  parsePaidWindow,
+  withinPaidWindow,
   matchesModel,
   needsOf,
   selectCandidates,
@@ -468,7 +471,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     if (strategy === "paid-first" || strategy === "free-first") {
       // 策略并入付费候选。付费候选受 maxPaidTries 严格限制；合并后整体按
       // maxTries 切片，保证单次请求总尝试数有上限，避免失控计费。
-      const paid = paidCandidates(catalog, state.models, needs, config, Date.now(), state.disabledProviders)
+      const paid = paidCandidates(catalog, state.models, needs, config, Date.now(), state.disabledProviders, readCredits())
         .filter((m) => !forced || m.id !== forced.id)
         .slice(0, Math.max(0, Math.trunc(Number(config.maxPaidTries) || 0)));
       ordered = strategy === "paid-first" ? [...paid, ...ordered] : [...ordered, ...paid];
@@ -745,12 +748,35 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     return { ok: true };
   }
 
-  // 控制台设置自动切换策略。策略只影响自动候选池；手动切换到付费模型始终可用。
-  function setStrategy(strategy) {
-    const s = typeof strategy === "string" ? strategy.trim() : "";
-    if (!STRATEGIES.has(s)) return { ok: false, error: `unknown strategy: ${s || "(empty)"}` };
+  // 控制台设置自动切换策略与付费策略参数。策略只影响自动候选池；手动切换到
+  // 付费模型始终可用。接受 { strategy, maxPaidTries, paidWindow, paidMinBalance }
+  // （旧调用也可直接传 strategy 字符串）。
+  function setStrategy(input) {
+    const body = input && typeof input === "object" ? input : { strategy: input };
     const config = loadConfig();
-    config.strategy = s;
+    if (body.strategy !== undefined) {
+      const s = typeof body.strategy === "string" ? body.strategy.trim() : "";
+      if (!STRATEGIES.has(s)) return { ok: false, error: `unknown strategy: ${s || "(empty)"}` };
+      config.strategy = s;
+    }
+    if (body.maxPaidTries !== undefined) {
+      const n = Number(body.maxPaidTries);
+      if (!Number.isFinite(n)) return { ok: false, error: "maxPaidTries must be a number" };
+      config.maxPaidTries = Math.max(0, Math.min(20, Math.trunc(n)));
+    }
+    if (body.paidWindow !== undefined) {
+      const raw = body.paidWindow === "" ? null : body.paidWindow;
+      const parsed = parsePaidWindow(raw);
+      if (raw !== null && raw !== undefined && !parsed) {
+        return { ok: false, error: "paidWindow must look like 22:00-06:00" };
+      }
+      config.paidWindow = formatPaidWindow(parsed);
+    }
+    if (body.paidMinBalance !== undefined) {
+      const n = Number(body.paidMinBalance);
+      if (!Number.isFinite(n) || n < 0) return { ok: false, error: "paidMinBalance must be >= 0" };
+      config.paidMinBalance = n > 0 ? n : 0;
+    }
     try {
       writeJSON(configPath(), config);
     } catch (error) {
@@ -804,6 +830,24 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         reasoning: model.reasoning,
       };
     });
+    const credits = readCredits();
+    const paidWindowActive = withinPaidWindow(config.paidWindow, now);
+    const paidMinBalance = Number(config.paidMinBalance) > 0 ? Number(config.paidMinBalance) : 0;
+    const balanceByProvider = new Map();
+    if (paidMinBalance) {
+      for (const c of credits) {
+        const b = Number(c?.balance);
+        if (c?.provider && Number.isFinite(b)) balanceByProvider.set(c.provider, b);
+      }
+    }
+    // 付费模型为何不参与自动切换：窗口外 / 余额低于下限。null 表示可自动使用。
+    const paidBlockedReason = (model) => {
+      if (model.free) return null;
+      if (!paidWindowActive) return "window";
+      const b = balanceByProvider.get(model.provider);
+      if (b !== undefined && b < paidMinBalance) return "balance";
+      return null;
+    };
     return {
       now,
       gateway: gatewayAddress(),
@@ -825,13 +869,16 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         preferredModels: config.preferredModels,
         strategy: config.strategy,
         maxPaidTries: config.maxPaidTries,
+        paidWindow: config.paidWindow,
+        paidMinBalance: config.paidMinBalance,
+        paidWindowActive,
       },
       disabledProviders: Array.isArray(state.disabledProviders) ? [...state.disabledProviders] : [],
       manualSwitch: state.manualSwitch ?? null,
       allProviders: (() => {
         try { return readAllProviders(); } catch { return []; }
       })(),
-      credits: readCredits(),
+      credits,
       models,
       catalog: (cache.catalog ?? []).map((model) => {
         const entry = state.models[model.id] ?? {};
@@ -842,6 +889,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
           provider: model.provider,
           name: model.name,
           free: !!model.free,
+          paidBlocked: paidBlockedReason(model),
           cooling: summary.cooling,
           until: summary.until,
           failures: entry.failures ?? 0,

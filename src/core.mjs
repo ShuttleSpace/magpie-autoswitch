@@ -41,6 +41,12 @@ export const DEFAULT_CONFIG = {
   strategy: "free",
   // 单次请求最多尝试的付费模型数（付费模型可能产生实际费用，需严格上限）。
   maxPaidTries: 2,
+  // 自动使用付费模型的时间窗口（本地时间）：null/空 = 全天；"22:00-06:00"
+  // 支持跨午夜。窗口外只走免费池，手动切换付费模型不受限制。
+  paidWindow: null,
+  // 供应商余额下限：余额低于该值时不再自动使用其付费模型（0 = 不限制）。
+  // 读取 Magpie quotas.json / credits-daily.json 里的 balance；无余额数据时不拦截。
+  paidMinBalance: 0,
   maxTries: 6,
   refreshSeconds: 60,
   cooldownSeconds: 60,
@@ -323,17 +329,73 @@ export function supports(model, needs) {
   return true;
 }
 
+// Paid-window helpers. A window is stored as "HH:MM-HH:MM" (local time) and may
+// wrap past midnight ("22:00-06:00"). null/empty means all day.
+function clockMinutes(value) {
+  const m = String(value ?? "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return undefined;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return undefined;
+  return h * 60 + min;
+}
+
+export function parsePaidWindow(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "string") {
+    const m = value.trim().match(/^(\d{1,2}:\d{2})\s*(?:[-–~至]|to)\s*(\d{1,2}:\d{2})$/i);
+    if (!m) return null;
+    const start = clockMinutes(m[1]);
+    const end = clockMinutes(m[2]);
+    return start === undefined || end === undefined ? null : { start, end };
+  }
+  if (typeof value === "object") {
+    const start = clockMinutes(value.start);
+    const end = clockMinutes(value.end);
+    return start === undefined || end === undefined ? null : { start, end };
+  }
+  return null;
+}
+
+export function formatPaidWindow(window) {
+  const w = typeof window === "object" && window ? window : parsePaidWindow(window);
+  if (!w) return null;
+  const hm = (mins) => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+  return `${hm(w.start)}-${hm(w.end)}`;
+}
+
+export function withinPaidWindow(window, now = Date.now()) {
+  const w = typeof window === "object" && window ? window : parsePaidWindow(window);
+  if (!w) return true;
+  const d = new Date(now);
+  const cur = d.getHours() * 60 + d.getMinutes();
+  if (w.start === w.end) return true;
+  return w.start < w.end ? cur >= w.start && cur < w.end : cur >= w.start || cur < w.end;
+}
+
 // Paid-model candidate pool for the auto-switch strategy. Returns paid rows
 // from the catalog that survive the same include/exclude/disabled/capability
 // filters as the free pool, skipping ones already cooling. Never includes free
 // rows: callers prepend/append the result to the free failover order, so a bug
 // here must not leak free rows into paid placement.
-export function paidCandidates(catalog, stateModels, needs, config = DEFAULT_CONFIG, now = Date.now(), disabledProviders = []) {
+//
+// `credits` is readCredits() data: when paidMinBalance > 0, a provider whose
+// reported balance is below the floor is skipped (unknown balance is allowed).
+export function paidCandidates(catalog, stateModels, needs, config = DEFAULT_CONFIG, now = Date.now(), disabledProviders = [], credits = []) {
+  if (!withinPaidWindow(config.paidWindow, now)) return [];
   const all = Array.isArray(catalog) ? catalog.filter((m) => m && m.free === false) : [];
   const includeProviders = Array.isArray(config.includeProviders) ? config.includeProviders : [];
   const excludeProviders = Array.isArray(config.excludeProviders) ? config.excludeProviders : [];
   const excludeModels = Array.isArray(config.excludeModels) ? config.excludeModels : [];
   const providers = Array.isArray(disabledProviders) ? disabledProviders : [];
+  const minBalance = Number(config.paidMinBalance) > 0 ? Number(config.paidMinBalance) : 0;
+  const balanceByProvider = new Map();
+  if (minBalance) {
+    for (const c of Array.isArray(credits) ? credits : []) {
+      const balance = Number(c?.balance);
+      if (c?.provider && Number.isFinite(balance)) balanceByProvider.set(c.provider, balance);
+    }
+  }
   const isDisabled = (m) => {
     if (stateModels?.[m.id]?.disabled) return true;
     return providers.some((p) => matchesModel(m, p));
@@ -345,6 +407,10 @@ export function paidCandidates(catalog, stateModels, needs, config = DEFAULT_CON
     if (excludeProviders.some((p) => matchesModel(m, p))) continue;
     if (excludeModels.some((p) => matchesModel(m, p))) continue;
     if (cooldownActive(stateModels?.[m.id], now)) continue;
+    if (minBalance) {
+      const balance = balanceByProvider.get(m.provider);
+      if (balance !== undefined && balance < minBalance) continue;
+    }
     out.push(m);
   }
   const capable = out.filter((m) => supports(m, needs));

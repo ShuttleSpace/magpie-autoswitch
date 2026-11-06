@@ -421,6 +421,10 @@ test("console disable / enable / switch endpoints route to the right handler", a
       if (model) state.manualSwitch = { model, at: 1 };
       return { ok: true };
     },
+    setStrategy: async (body) => {
+      state.strategyBody = body;
+      return { ok: true };
+    },
   });
   const url = await consoleServer.start(0);
   let res = await fetch(`${url}/api/disable`, {
@@ -445,6 +449,14 @@ test("console disable / enable / switch endpoints route to the right handler", a
   });
   assert.equal(res.status, 200);
   assert.equal((await res.json()).manualSwitch.model, "zen/a");
+
+  res = await fetch(`${url}/api/strategy`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ strategy: "paid-first", maxPaidTries: 3, paidWindow: "22:00-06:00", paidMinBalance: 20 }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(state.strategyBody, { strategy: "paid-first", maxPaidTries: 3, paidWindow: "22:00-06:00", paidMinBalance: 20 });
 
   // unknown endpoint -> 404
   res = await fetch(`${url}/api/nope`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });

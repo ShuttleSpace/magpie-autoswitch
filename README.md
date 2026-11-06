@@ -59,6 +59,12 @@ magpie plugin login free-switch
    - `free-first`（先免费后付费）：先走免费池，全部失败/耗尽后再用付费模型兜底。
    付费候选池由 `paidCandidates` 从全量目录（含付费行）过滤：排除禁用供应商/模型、冷却中的付费模型，并按本次请求的能力过滤（失败则放宽）。付费尝试受 `maxPaidTries` 与 `maxTries` 双重上限，避免一次 failover 失控计费。付费模型的**手动切换**（console「切换付费」）始终可用、不受策略限制，由用户显式触发即计费。
 
+   更细的付费策略（控制台策略下拉框旁的两个输入框，仅策略非 `free` 时显示）：
+   - `paidWindow`：自动使用付费模型的时间窗口（**本地时间**），格式 `"22:00-06:00"`，支持跨午夜；留空/`null` 表示全天。窗口外自动切换只用免费模型。
+   - `paidMinBalance`：供应商余额下限，默认 `0`（不限制）。读取 Magpie `quotas.json` / `credits-daily.json` 的 `balance`；余额低于该值时该供应商的付费模型不再自动参与。没有余额数据的供应商不拦截（无法判断就不阻止）。
+   - 手动切换付费模型同样不受时间窗口与余额下限限制（用户显式动作）。
+   - 被策略挡住的付费模型会在控制台行内标注「窗口外」/「余额不足」，便于确认为什么没自动使用。
+
 ### 限时免费模型（如 `workbuddy-ai/hy4-preview`）
 
 插件**只从 Magpie 的 `/v1/models` 发现模型**，能否纳入完全取决于 Magpie 暴露的数据。一个模型会被判定为免费，当且仅当它满足以下任一明确信号：
@@ -153,6 +159,8 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
   "preferredModels": [],
   "strategy": "free",
   "maxPaidTries": 2,
+  "paidWindow": null,
+  "paidMinBalance": 0,
   "maxTries": 6,
   "refreshSeconds": 60,
   "cooldownSeconds": 60,
@@ -176,6 +184,8 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
 | `preferredModels` | 偏好模型列表。勾选（或在配置里列出）的模型会优先被尝试，支持 provider id、完整 model id、`*` 通配或 `/正则/`。控制台里勾选会自动写入这里。 |
 | `strategy` | 自动切换策略：`free`（完全免费，默认）、`paid-first`（先付费后免费）、`free-first`（先免费后付费）。控制台模型面板下拉框实时生效。 |
 | `maxPaidTries` | 单次请求最多尝试的付费模型数（默认 2），用于 `paid-first` / `free-first` 策略，防止失控计费。 |
+| `paidWindow` | 自动使用付费模型的时间窗口（本地时间），如 `"22:00-06:00"`（支持跨午夜）；`null`/留空表示全天。窗口外只走免费池。 |
+| `paidMinBalance` | 供应商余额下限，默认 `0`（不限制）。余额低于该值时该供应商的付费模型不自动参与；无余额数据不拦截。 |
 | `maxTries` | 一个请求最多尝试几个模型，1–20。 |
 | `refreshSeconds` | 模型列表缓存时间，默认 60 秒；控制台“刷新模型”会立即刷新。 |
 | `cooldownSeconds` | 429 没有重置提示时的基础冷却秒数。 |
@@ -187,7 +197,7 @@ Windows 下是 `%APPDATA%\magpie\free-switch\`；设置了 `XDG_CONFIG_HOME` 时
 | `diversifyProviders` | 默认开：第一轮每个 provider 只取一个模型，再取第二个，避免一个 provider 的免费池全被限流时占满所有重试次数。关掉后严格按优先级列表顺序。 |
 | `console` / `consolePort` | Web 控制台开关和端口。Magpie 的 Plugin options 开关优先；`console` 字段只在宿主没有 options 时作为后备，服务器可用 `FREE_SWITCH_CONSOLE`。 |
 
-环境变量覆盖：`FREE_SWITCH_CONSOLE`、`FREE_SWITCH_CONSOLE_PORT`、`FREE_SWITCH_MAX_TRIES`、`FREE_SWITCH_REFRESH_SECONDS`、`FREE_SWITCH_TRY_COOLING`、`FREE_SWITCH_DIVERSIFY_PROVIDERS`、`FREE_SWITCH_PRIORITY`、`FREE_SWITCH_INCLUDE_PROVIDERS`、`FREE_SWITCH_EXCLUDE_PROVIDERS`、`FREE_SWITCH_STRATEGY`、`FREE_SWITCH_MAX_PAID_TRIES`。如果 Magpie 网关不在本机回环地址、需要真实网关密钥，可设置 `FREE_SWITCH_GATEWAY_KEY`。
+环境变量覆盖：`FREE_SWITCH_CONSOLE`、`FREE_SWITCH_CONSOLE_PORT`、`FREE_SWITCH_MAX_TRIES`、`FREE_SWITCH_REFRESH_SECONDS`、`FREE_SWITCH_TRY_COOLING`、`FREE_SWITCH_DIVERSIFY_PROVIDERS`、`FREE_SWITCH_PRIORITY`、`FREE_SWITCH_INCLUDE_PROVIDERS`、`FREE_SWITCH_EXCLUDE_PROVIDERS`、`FREE_SWITCH_STRATEGY`、`FREE_SWITCH_MAX_PAID_TRIES`、`FREE_SWITCH_PAID_WINDOW`、`FREE_SWITCH_PAID_MIN_BALANCE`。如果 Magpie 网关不在本机回环地址、需要真实网关密钥，可设置 `FREE_SWITCH_GATEWAY_KEY`。
 
 ## 追踪数据
 

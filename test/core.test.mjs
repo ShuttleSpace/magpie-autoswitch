@@ -11,9 +11,12 @@ import {
   modelProblem,
   needsOf,
   normalizeModel,
-  parseDuration,
-  parseReset,
   paidCandidates,
+  parseDuration,
+  parsePaidWindow,
+  parseReset,
+  formatPaidWindow,
+  withinPaidWindow,
   selectCandidates,
   shouldStop,
   supports,
@@ -333,4 +336,56 @@ test("paidCandidates filters by capability needs, then relaxes when nothing fits
   const needs = { tools: true, images: false, reasoning: false, stream: false };
   const capable = paidCandidates(catalog, {}, needs, DEFAULT_CONFIG, Date.now(), []);
   assert.deepEqual(capable.map((m) => m.id), ["cn/glm"]);
+});
+
+test("parsePaidWindow / formatPaidWindow round-trip and reject bad input", () => {
+  assert.deepEqual(parsePaidWindow("22:00-06:00"), { start: 22 * 60, end: 6 * 60 });
+  assert.deepEqual(parsePaidWindow("01:00~02:30"), { start: 60, end: 150 });
+  assert.deepEqual(parsePaidWindow({ start: "00:15", end: "23:45" }), { start: 15, end: 23 * 60 + 45 });
+  assert.equal(parsePaidWindow(null), null);
+  assert.equal(parsePaidWindow(""), null);
+  assert.equal(parsePaidWindow("24:00-01:00"), null, "hour out of range");
+  assert.equal(parsePaidWindow("22:00"), null, "missing end");
+  assert.equal(parsePaidWindow("nope"), null);
+  assert.equal(formatPaidWindow({ start: 22 * 60, end: 6 * 60 }), "22:00-06:00");
+  assert.equal(formatPaidWindow("7:05-8:00"), "07:05-08:00");
+  assert.equal(formatPaidWindow(null), null);
+});
+
+test("withinPaidWindow handles all-day, normal and wrap-around windows", () => {
+  const at = (h, m = 0) => new Date(2026, 0, 1, h, m).getTime();
+  assert.equal(withinPaidWindow(null, at(12)), true, "no window means all day");
+  assert.equal(withinPaidWindow("00:00-00:00", at(12)), true, "empty window is all day");
+  assert.equal(withinPaidWindow("09:00-17:00", at(10)), true);
+  assert.equal(withinPaidWindow("09:00-17:00", at(17)), false, "end is exclusive");
+  assert.equal(withinPaidWindow("22:00-06:00", at(23, 30)), true);
+  assert.equal(withinPaidWindow("22:00-06:00", at(5, 59)), true);
+  assert.equal(withinPaidWindow("22:00-06:00", at(12)), false);
+});
+
+test("paidCandidates honours the paid window", () => {
+  const catalog = [{ id: "zen/b", provider: "zen", name: "b", free: false }];
+  const noon = new Date(2026, 0, 1, 12, 0).getTime();
+  const night = new Date(2026, 0, 1, 23, 0).getTime();
+  const config = { ...DEFAULT_CONFIG, paidWindow: "22:00-06:00" };
+  assert.deepEqual(paidCandidates(catalog, {}, config, config, noon, []), [], "outside window");
+  assert.deepEqual(paidCandidates(catalog, {}, config, config, night, []), catalog, "inside window");
+});
+
+test("paidCandidates skips providers whose balance is below the floor", () => {
+  const catalog = [
+    { id: "zen/b", provider: "zen", name: "b", free: false },
+    { id: "cn/glm", provider: "cn", name: "glm", free: false },
+  ];
+  const config = { ...DEFAULT_CONFIG, paidMinBalance: 10 };
+  const credits = [
+    { provider: "zen", balance: 5 },
+    { provider: "cn", balance: 50 },
+  ];
+  assert.deepEqual(paidCandidates(catalog, {}, config, config, Date.now(), [], credits).map((m) => m.id), ["cn/glm"]);
+  assert.deepEqual(
+    paidCandidates(catalog, {}, config, config, Date.now(), [], [{ provider: "zen" }]).map((m) => m.id),
+    ["zen/b", "cn/glm"],
+    "unknown balance is not blocked"
+  );
 });

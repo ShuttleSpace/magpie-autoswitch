@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_CONFIG, STRATEGIES } from "./core.mjs";
+import { DEFAULT_CONFIG, STRATEGIES, formatPaidWindow } from "./core.mjs";
 
 const TRACE_MAX_BYTES = 2 * 1024 * 1024;
 const TRACE_KEEP_LINES = 1000;
@@ -161,6 +161,11 @@ export function loadConfig() {
     const paid = Number(config.maxPaidTries);
     config.maxPaidTries = Number.isFinite(paid) ? Math.max(0, Math.min(20, Math.trunc(paid))) : DEFAULT_CONFIG.maxPaidTries;
   }
+  config.paidWindow = formatPaidWindow(config.paidWindow);
+  {
+    const min = Number(config.paidMinBalance);
+    config.paidMinBalance = Number.isFinite(min) && min > 0 ? min : 0;
+  }
   config.tryCooling = boolish(config.tryCooling, true);
   config.diversifyProviders = boolish(config.diversifyProviders, true);
   config.console = boolish(config.console, false);
@@ -186,6 +191,10 @@ function applyEnv(config) {
   if (strategy && STRATEGIES.has(strategy)) config.strategy = strategy;
   const paidTries = numberEnv(process.env.FREE_SWITCH_MAX_PAID_TRIES);
   if (paidTries !== undefined) config.maxPaidTries = Math.max(0, Math.min(20, Math.trunc(paidTries)));
+  const paidWindow = process.env.FREE_SWITCH_PAID_WINDOW?.trim();
+  if (paidWindow !== undefined) config.paidWindow = formatPaidWindow(paidWindow);
+  const paidMinBalance = numberEnv(process.env.FREE_SWITCH_PAID_MIN_BALANCE);
+  if (paidMinBalance !== undefined) config.paidMinBalance = Math.max(0, paidMinBalance);
   const refresh = numberEnv(process.env.FREE_SWITCH_REFRESH_SECONDS);
   if (refresh !== undefined) config.refreshSeconds = Math.max(5, Math.min(3600, refresh));
   const cooling = boolEnv(process.env.FREE_SWITCH_TRY_COOLING);

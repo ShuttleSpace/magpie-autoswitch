@@ -96,9 +96,9 @@ export function createConsole({ getState, refresh, clearCooldown, disable, enabl
       }
       if (req.method === "POST" && url.pathname === "/api/strategy") {
         const body = await readBody(req);
-        const result = await setStrategy?.(body?.strategy);
+        const result = await setStrategy?.(body);
         const state = await getState();
-        return json(res, 200, { ...state, ok: result?.ok !== false });
+        return json(res, 200, { ...state, ok: result?.ok !== false, error: result?.error });
       }
       if (req.method === "POST" && url.pathname === "/api/providers") {
         const body = await readBody(req);

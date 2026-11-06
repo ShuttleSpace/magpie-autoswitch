@@ -146,10 +146,11 @@
             <option value="name">按名称</option>
             <option value="cooling">冷却优先</option>
           </select>
-          <select id="strategy" class="select" title="自动切换策略：完全免费 / 先付费后免费 / 先免费后付费">
+          <select id="strategy" class="select" title="自动切换策略：完全免费 / 先付费后免费 / 先免费后付费 / 积分到期优先">
             <option value="free">完全免费</option>
             <option value="paid-first">先付费后免费</option>
             <option value="free-first">先免费后付费</option>
+            <option value="expiry-first">积分到期优先</option>
           </select>
           <span id="paid-policy" class="toolbar" hidden>
             <input id="paid-window" class="select" type="text" size="11" placeholder="22:00-06:00" title="自动使用付费模型的时间窗口（本地时间），留空表示全天；支持跨午夜">
@@ -247,6 +248,36 @@
           <dt>上游雷达</dt><dd id="set-upstream">—</dd>
           <dt>Retry-After 上限</dt><dd id="set-max-reset">—</dd>
         </dl>
+      </div>
+      <div class="set-section">
+        <div class="set-title">调度策略</div>
+        <div class="set-actions">
+          <select id="set-strategy" class="set-select" title="自动切换策略。「积分到期优先」= 免费优先的基础上，把积分/配额即将到期的提供商排到前面，用完以免过期"></select>
+          <button id="set-strategy-save" class="ghost" type="button">保存策略</button>
+        </div>
+        <div class="set-hint" id="set-strategy-hint"></div>
+      </div>
+      <div class="set-section">
+        <div class="set-title">核心调度参数</div>
+        <div class="set-fields">
+          <label class="set-field"><span>单次最多尝试</span><input id="set-maxtries" type="number" min="1" max="20" step="1"></label>
+          <label class="set-field"><span>模型刷新间隔(秒)</span><input id="set-refresh-seconds" type="number" min="5" max="3600" step="1"></label>
+          <label class="set-field"><span>冷却时长(秒)</span><input id="set-cooldown" type="number" min="1" max="86400" step="1"></label>
+          <label class="set-field"><span>首字节超时(秒)</span><input id="set-fbto" type="number" min="0" max="600" step="1"></label>
+        </div>
+        <button id="set-core-save" class="ghost" type="button">保存参数</button>
+        <div class="set-hint" id="set-core-hint"></div>
+      </div>
+      <div class="set-section">
+        <div class="set-title">付费策略</div>
+        <div class="set-fields">
+          <label class="set-field"><span>最大付费尝试</span><input id="set-maxpaid" type="number" min="0" max="20" step="1"></label>
+          <label class="set-field"><span>付费窗口(空=全天)</span><input id="set-paidwin" type="text" placeholder="22:00-06:00"></label>
+          <label class="set-field"><span>余额下限</span><input id="set-minbal" type="number" min="0" step="0.01"></label>
+          <label class="set-check"><input id="set-trycooling" type="checkbox"><span>冷却中的模型也参与尝试</span></label>
+        </div>
+        <button id="set-paid-save" class="ghost" type="button">保存付费策略</button>
+        <div class="set-hint" id="set-paid-hint"></div>
       </div>
       <div class="set-section">
         <div class="set-title">操作</div>

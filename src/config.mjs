@@ -45,6 +45,14 @@ export function readCredits() {
   const add = (providerId, entry) => {
     if (!providerId) return;
     const prev = byId.get(providerId) ?? {};
+    // 该提供商所有配额窗口里最早的一次重置/到期时间（秒级时间戳），用于
+    // expiry-first 策略按「积分即将到期」优先调度。无到期信息时保持 undefined。
+    let resetAt = prev.resetAt;
+    const windows = Array.isArray(entry.windows) ? entry.windows : [];
+    for (const w of windows) {
+      const at = Number(w?.resetsAt);
+      if (Number.isFinite(at) && at > 0 && (resetAt === undefined || at < resetAt)) resetAt = at;
+    }
     byId.set(providerId, {
       provider: entry.provider ?? providerId,
       name: entry.name ?? providerId,
@@ -54,7 +62,8 @@ export function readCredits() {
       balance: entry.balance,
       used: entry.used,
       total: entry.total,
-      windows: Array.isArray(entry.windows) ? entry.windows : [],
+      windows,
+      resetAt,
     });
   };
   for (const key of Object.keys(quotas ?? {})) {

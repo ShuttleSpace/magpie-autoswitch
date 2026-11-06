@@ -263,6 +263,10 @@ test("the console serves the page and its state on loopback", async () => {
   assert.match(html, /AUTOSWITCH/);
   assert.match(html, /id="settings-btn"/, "the topbar has a settings entry");
   assert.match(html, /id="chart-outcomes"/, "chart containers are present");
+  assert.match(html, /id="set-strategy"/, "settings panel has a strategy selector");
+  assert.match(html, /id="set-core-save"/, "settings panel has editable core scheduling params");
+  assert.match(html, /id="set-paid-save"/, "settings panel has editable paid params");
+  assert.match(html, /value="expiry-first"/, "the strategy list includes expiry-first");
   assert.match(html, /\.chart-grid\s*\{/, "assembled CSS from src/console/*.css is inlined");
   assert.match(html, /function renderCharts\(\)/, "assembled JS from src/console/*.js is inlined");
   assert.doesNotMatch(html, /__CONSOLE_CSS__|__CONSOLE_JS__/, "no unreplaced placeholders");
@@ -668,4 +672,54 @@ test("upstream health from magpie demotes a limited model and is exposed in stat
   assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/b"]);
   await hooks.lifecycle.dispose();
   await gateway.close();
+});
+
+test("setConfig validates and persists the editable whitelist", async () => {
+  const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "free-switch", "config.json"),
+      JSON.stringify({ strategy: "free", maxTries: 6, refreshSeconds: 60, cooldownSeconds: 60, firstByteTimeoutSeconds: 25, maxPaidTries: 2, paidWindow: null, paidMinBalance: 0, tryCooling: true }),
+    );
+    const api = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+    let res = await api.setConfig({
+      strategy: "expiry-first",
+      maxTries: "12",
+      refreshSeconds: 120,
+      cooldownSeconds: 300,
+      firstByteTimeoutSeconds: 10,
+      maxPaidTries: 3,
+      paidWindow: "22:00-06:00",
+      paidMinBalance: 5,
+      tryCooling: false,
+    });
+    assert.equal(res.ok, true);
+    assert.ok(res.changed.includes("strategy"));
+    assert.ok(res.changed.includes("maxTries"));
+    let saved = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "config.json"), "utf8"));
+    assert.equal(saved.strategy, "expiry-first");
+    assert.equal(saved.maxTries, 12, "string coerced to clamped integer");
+    assert.equal(saved.firstByteTimeoutSeconds, 10);
+    assert.equal(saved.paidWindow, "22:00-06:00");
+    assert.equal(saved.paidMinBalance, 5);
+    assert.equal(saved.tryCooling, false);
+    // 非法策略被拒绝，且不破坏已保存的其它字段
+    res = await api.setConfig({ strategy: "bogus" });
+    assert.equal(res.ok, false);
+    saved = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "config.json"), "utf8"));
+    assert.equal(saved.strategy, "expiry-first", "invalid strategy rejected, prior value kept");
+    // 非法付费窗口被拒绝
+    res = await api.setConfig({ paidWindow: "noonish" });
+    assert.equal(res.ok, false);
+    saved = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "config.json"), "utf8"));
+    assert.equal(saved.paidWindow, "22:00-06:00");
+    await api.lifecycle.dispose();
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

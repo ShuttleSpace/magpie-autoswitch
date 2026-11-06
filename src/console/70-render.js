@@ -2,6 +2,17 @@
     var el = document.getElementById(id);
     if (el) el.className = cls;
   }
+  // 设置面板输入框：聚焦中的不覆盖，避免打断用户正在输入。
+  function setFieldValue(id, value) {
+    var el = document.getElementById(id);
+    if (el && document.activeElement !== el) {
+      el.value = (value === undefined || value === null) ? "" : String(value);
+    }
+  }
+  function setFieldChecked(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.checked = !!value;
+  }
   function render() {
     if (!state) return;
     var stats = state.stats || {};
@@ -38,6 +49,26 @@
     if (paidWindowEl && document.activeElement !== paidWindowEl) paidWindowEl.value = cfg.paidWindow || "";
     var paidBalanceEl = document.getElementById("paid-min-balance");
     if (paidBalanceEl && document.activeElement !== paidBalanceEl) paidBalanceEl.value = cfg.paidMinBalance ? String(cfg.paidMinBalance) : "";
+
+    // 设置面板：策略下拉（动态选项，与后端 STRATEGIES 同步）+ 可编辑参数
+    var setStrategyEl = document.getElementById("set-strategy");
+    if (setStrategyEl) {
+      var labels = state.strategyLabels || {};
+      if (setStrategyEl.options.length !== (state.strategies || []).length) {
+        setStrategyEl.innerHTML = (state.strategies || []).map(function (s) {
+          return '<option value="' + esc(s) + '">' + esc(labels[s] || s) + "</option>";
+        }).join("");
+      }
+      if (document.activeElement !== setStrategyEl) setStrategyEl.value = cfg.strategy || "free";
+    }
+    setFieldValue("set-maxtries", cfg.maxTries);
+    setFieldValue("set-refresh-seconds", cfg.refreshSeconds);
+    setFieldValue("set-cooldown", cfg.cooldownSeconds);
+    setFieldValue("set-fbto", cfg.firstByteTimeoutSeconds);
+    setFieldValue("set-maxpaid", cfg.maxPaidTries);
+    setFieldValue("set-paidwin", cfg.paidWindow || "");
+    setFieldValue("set-minbal", cfg.paidMinBalance ? String(cfg.paidMinBalance) : "");
+    setFieldChecked("set-trycooling", cfg.tryCooling !== false);
     renderUpstream();
     renderCharts();
 

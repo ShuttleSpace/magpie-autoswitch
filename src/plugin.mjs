@@ -14,6 +14,8 @@ import {
   demoteUpstream,
   buildStatsCharts,
   STRATEGIES,
+  STRATEGY_LABELS,
+  reorderByExpiry,
   formatPaidWindow,
   parsePaidWindow,
   withinPaidWindow,
@@ -322,6 +324,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     switch: (value) => setManualSwitch(typeof value === "string" ? value : value?.model),
     cancelSwitch: () => cancelManualSwitch(),
     setStrategy: (strategy) => setStrategy(strategy),
+    setConfig: (config) => setConfig(config),
     refreshUpstream: () => refreshUpstream(true),
   });
 
@@ -566,14 +569,20 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     const upstream = upstreamView(config);
     let ordered = demoteUpstream(selection.ordered, upstream.summary, Date.now());
     const max = Math.max(1, Math.min(20, Math.trunc(Number(config.maxTries) || 6)));
-    if (strategy === "paid-first" || strategy === "free-first") {
+    if (strategy === "paid-first" || strategy === "free-first" || strategy === "expiry-first") {
       // 策略并入付费候选。付费候选受 maxPaidTries 严格限制；合并后整体按
       // maxTries 切片，保证单次请求总尝试数有上限，避免失控计费。
       const paid = demoteUpstream(paidCandidates(catalog, state.models, needs, config, Date.now(), state.disabledProviders, readCredits()), upstream.summary, Date.now())
         .filter((m) => !forced || m.id !== forced.id)
         .slice(0, Math.max(0, Math.trunc(Number(config.maxPaidTries) || 0)));
+      // paid-first 以付费在前、免费在后；free-first / expiry-first 反之。
       ordered = strategy === "paid-first" ? [...paid, ...ordered] : [...ordered, ...paid];
       ordered = ordered.slice(0, max);
+      if (strategy === "expiry-first") {
+        // 免费优先的基础上，段内按「积分/配额即将到期」重排：到期越近越先用，
+        // 无到期信息的型号沉到该段末尾。
+        ordered = reorderByExpiry(ordered, readCredits());
+      }
     }
     if (forced && !forcedDisabled) {
       ordered = [forced, ...ordered.filter((m) => m.id !== forced.id)];
@@ -904,6 +913,61 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     return { ok: true };
   }
 
+  // 控制台「设置」面板可手动配置的参数白名单：核心调度参数 + 付费/策略参数。
+  // 每个字段独立校验，校验不通过的字段被忽略（不影响其它字段），返回 changed
+  // 列表便于前端提示。与 setStrategy 共用同一份 loadConfig/writeJSON 落盘路径。
+  function setConfig(input) {
+    const body = input && typeof input === "object" ? input : {};
+    const config = loadConfig();
+    const changed = [];
+    const clampInt = (key, min, max, raw) => {
+      if (raw === undefined) return;
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return;
+      config[key] = Math.max(min, Math.min(max, Math.trunc(n)));
+      changed.push(key);
+    };
+    if (body.strategy !== undefined) {
+      const s = typeof body.strategy === "string" ? body.strategy.trim() : "";
+      if (!STRATEGIES.has(s)) return { ok: false, error: `unknown strategy: ${s || "(empty)"}` };
+      config.strategy = s;
+      changed.push("strategy");
+    }
+    clampInt("maxTries", 1, 20, body.maxTries);
+    clampInt("refreshSeconds", 5, 3600, body.refreshSeconds);
+    clampInt("cooldownSeconds", 1, 86400, body.cooldownSeconds);
+    clampInt("firstByteTimeoutSeconds", 0, 600, body.firstByteTimeoutSeconds);
+    clampInt("maxPaidTries", 0, 20, body.maxPaidTries);
+    if (body.paidWindow !== undefined) {
+      const raw = body.paidWindow === "" ? null : body.paidWindow;
+      const parsed = parsePaidWindow(raw);
+      if (raw !== null && raw !== undefined && !parsed) {
+        return { ok: false, error: "paidWindow must look like 22:00-06:00" };
+      }
+      config.paidWindow = formatPaidWindow(parsed);
+      changed.push("paidWindow");
+    }
+    if (body.paidMinBalance !== undefined) {
+      const n = Number(body.paidMinBalance);
+      if (!Number.isFinite(n) || n < 0) return { ok: false, error: "paidMinBalance must be >= 0" };
+      config.paidMinBalance = n > 0 ? n : 0;
+      changed.push("paidMinBalance");
+    }
+    if (body.tryCooling !== undefined) {
+      const v = bool(body.tryCooling);
+      if (v !== undefined) {
+        config.tryCooling = v;
+        changed.push("tryCooling");
+      }
+    }
+    try {
+      writeJSON(configPath(), config);
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+    return { ok: true, changed };
+  }
+
   function clearCooldown(model) {
     if (model) delete state.models[model];
     else state.models = {};
@@ -971,6 +1035,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       now,
       gateway: gatewayAddress(),
       version: VERSION,
+      strategies: [...STRATEGIES],
+      strategyLabels: STRATEGY_LABELS,
       configFile: configPath(),
       discoveredAt: cache.at || null,
       discoveryError: cache.error ?? null,
@@ -1175,6 +1241,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         return { auto: modelDef(models.length, maxContext) };
       },
     },
+    // 供控制台 /api/config 调用的同一份落盘逻辑，暴露出来便于测试与复用。
+    setConfig: (config) => setConfig(config),
   };
 }
 

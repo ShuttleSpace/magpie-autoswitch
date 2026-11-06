@@ -6,13 +6,25 @@ export const PROVIDER = "free-switch";
 export const SELF_PROVIDERS = new Set([PROVIDER, `${PROVIDER}-plugin`]);
 
 // Bump alongside RELEASE_NOTES.md when shipping a change.
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";
 
 // Auto-switch strategy: how paid models participate in the failover pool.
 // "free"        — paid models are never tried automatically (default).
 // "paid-first"  — try up to maxPaidTries paid models before the free pool.
 // "free-first"  — try the free pool first, then fall back to paid models.
-export const STRATEGIES = new Set(["free", "paid-first", "free-first"]);
+// "expiry-first"— like free-first, but within the free pool (and within the
+//                 paid tail) models whose provider credits/quota expire soonest
+//                 (nearest resetsAt) are tried first; providers with no
+//                 expiration data are pushed to the back.
+export const STRATEGIES = new Set(["free", "paid-first", "free-first", "expiry-first"]);
+
+// 调度策略的中文标签，供控制台下拉框直接渲染。
+export const STRATEGY_LABELS = {
+  free: "完全免费（不自动用付费）",
+  "paid-first": "先付费后免费",
+  "free-first": "先免费后付费",
+  "expiry-first": "积分到期优先",
+};
 
 export const DEFAULT_CONFIG = {
   // The order providers (or full model ids) are tried in. Anything left over
@@ -766,6 +778,43 @@ export function demoteUpstream(ordered, summary, now = Date.now()) {
     (limited.has(m?.id) ? late : keep).push(m);
   }
   return [...keep, ...late];
+}
+
+// 把积分/配额到期时间建成「提供商 → 最近 resetsAt」的查表。
+// credits 来自 readCredits()：每条带 resetAt（该提供商所有窗口里最早的一次
+// 重置/到期时间）。没有到期信息的提供商不在表里（查询返回 Infinity）。
+export function expiryMap(credits) {
+  const map = new Map();
+  for (const c of Array.isArray(credits) ? credits : []) {
+    const at = Number(c?.resetAt);
+    if (c?.provider && Number.isFinite(at) && at > 0) {
+      const prev = map.get(c.provider);
+      if (prev === undefined || at < prev) map.set(c.provider, at);
+    }
+  }
+  return map;
+}
+
+// 在保持「免费优先于付费」的前提下，把候选按积分到期时间从近到远重排：
+// 到期越近越先用，没有到期信息的模型沉到该段末尾。免费段、付费段各自独立排序，
+// 因此 expiry-first 不会把免费模型排到付费模型后面。使用稳定排序保留并列次序。
+export function reorderByExpiry(ordered, expiry) {
+  if (!Array.isArray(ordered) || !ordered.length) return ordered;
+  const m = expiry instanceof Map ? expiry : expiryMap(expiry);
+  const key = (model) => {
+    const at = m.get(model?.provider);
+    return Number.isFinite(at) && at > 0 ? at : Infinity;
+  };
+  const free = [];
+  const paid = [];
+  for (const model of ordered) {
+    (model?.free === false ? paid : free).push(model);
+  }
+  const byExpiry = (list) => list
+    .map((model, i) => ({ model, i, k: key(model) }))
+    .sort((a, b) => (a.k - b.k) || (a.i - b.i))
+    .map((e) => e.model);
+  return [...byExpiry(free), ...byExpiry(paid)];
 }
 
 // ---- 统计图表数据（纯函数）----

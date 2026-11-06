@@ -34,6 +34,8 @@
       if (hasCredits) {
         creditText = '<span class="chip-credit">积分 <b>' + (credit.used ?? 0) + "/" + (credit.total ?? 0) + "</b></span>";
       }
+      var expiry = expiryText(credit && credit.resetAt);
+      var expiryMark = expiry ? '<span class="chip-credit expiring" title="积分/配额到期时间：' + esc(clock(credit.resetAt)) + '">' + esc(expiry) + "</span>" : "";
       var disabledMark = disabledProviders[p] ? '<span class="chip-credit">已禁用</span>' : "";
       var cls = ["dlg-item", selected ? "selected" : ""].filter(Boolean).join(" ");
       parts.push(
@@ -42,7 +44,7 @@
           '<span class="chip-ic">' + provIcon(p) + "</span>" +
           '<span class="chip-name">' + esc(p) + "</span>" +
           freeTag +
-          '<span class="chip-credit-wrap">' + creditText + disabledMark + "</span>" +
+          '<span class="chip-credit-wrap">' + creditText + expiryMark + disabledMark + "</span>" +
           '<button class="ghost only-btn" data-only-provider="' + esc(p) + '" type="button" title="只选这一个提供商">仅选</button>' +
         "</label>"
       );
@@ -63,6 +65,10 @@
         var amt = credit.balance !== undefined ? " · 余额 " + credit.balance : "";
         creditText = '<span class="prov-credit">积分 <b>' + (credit.used ?? 0) + "/" + (credit.total ?? 0) + "</b>" + amt + "</span>";
       }
+      var expiry = expiryText(credit && credit.resetAt);
+      var expiryPart = expiry
+        ? '<span class="prov-credit expiring" title="积分/配额到期时间：' + esc(clock(credit.resetAt)) + '">' + esc(expiry) + "</span>"
+        : "";
       var cls = ["prov-item", h.status, provFocus === p ? "selected" : "", hasCredits ? "has-credits" : "", disabledProviders[p] ? "disabled" : ""].filter(Boolean).join(" ");
       var freeTag = h.total > 0 ? '<span class="tag free">免费</span>' : '<span class="tag paid">付费</span>';
       var creditPart = hasCredits
@@ -83,6 +89,7 @@
           '<div class="prov-sub">' +
             '<span class="prov-stat"><span class="dot"></span>' + esc(sub) + "</span>" +
             creditPart +
+            expiryPart +
           "</div>" +
         "</div>"
       );

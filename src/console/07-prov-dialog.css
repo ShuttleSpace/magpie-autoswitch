@@ -13,5 +13,6 @@
   .dlg-item .chip-name { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; font-weight: 600; word-break: break-all; flex: 1; min-width: 0; }
   .dlg-item .chip-credit { color: var(--muted); font-size: 11px; }
   .dlg-item .chip-credit b { color: var(--teal); font-weight: 600; }
+  .dlg-item .chip-credit.expiring { color: var(--amber); }
   .dlg-item .chip-credit-wrap { display: flex; gap: 8px; align-items: center; margin-left: auto; flex: 0 0 auto; }
   .dlg-item .only-btn { padding: 3px 8px; font-size: 11px; flex: 0 0 auto; }

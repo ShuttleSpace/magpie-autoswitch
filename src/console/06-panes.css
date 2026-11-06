@@ -29,5 +29,6 @@
   .prov-item.down .prov-sub .dot { background: var(--red); }
   .prov-item .prov-credit { white-space: nowrap; font-size: 11px; color: var(--dim); }
   .prov-item .prov-credit b { color: var(--teal); font-weight: 600; }
+  .prov-item .prov-credit.expiring { color: var(--amber); }
   .prov-item .prov-actions { display: flex; gap: 6px; }
 

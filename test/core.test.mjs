@@ -25,6 +25,9 @@ import {
   selectCandidates,
   shouldStop,
   supports,
+  expiryMap,
+  reorderByExpiry,
+  STRATEGIES,
 } from "../src/core.mjs";
 
 const free = (id, provider = id.split("/")[0], extra = {}) => ({
@@ -504,4 +507,62 @@ test("buildStatsCharts keeps a single trace in one bucket", () => {
   assert.equal(c.total, 1);
   assert.equal(c.buckets.reduce((s, b) => s + b.requests, 0), 1);
   assert.equal(c.bucketMs, 1000, "the minimum bucket width is 1s");
+});
+
+test("STRATEGIES includes expiry-first", () => {
+  assert.ok(STRATEGIES.has("expiry-first"));
+  assert.ok(STRATEGIES.has("free"));
+  assert.ok(STRATEGIES.has("paid-first"));
+  assert.ok(STRATEGIES.has("free-first"));
+  assert.equal(STRATEGIES.size, 4);
+});
+
+test("expiryMap picks the soonest resetsAt per provider", () => {
+  const credits = [
+    { provider: "a", resetAt: 5000 },
+    { provider: "a", resetAt: 3000 },
+    { provider: "b", resetAt: 1000 },
+    { provider: "c" },
+    { provider: "d", resetAt: 0 },
+  ];
+  const m = expiryMap(credits);
+  assert.equal(m.get("a"), 3000);
+  assert.equal(m.get("b"), 1000);
+  assert.equal(m.has("c"), false);
+  assert.equal(m.has("d"), false);
+});
+
+test("reorderByExpiry keeps free before paid, sorts each segment by soonest expiry", () => {
+  const credits = [
+    { provider: "expires-soon", resetAt: 1000 },
+    { provider: "expires-late", resetAt: 9000 },
+  ];
+  const ordered = [
+    { id: "free/no-expiry/x", provider: "no-expiry", free: true },
+    { id: "free/late/y", provider: "expires-late", free: true },
+    { id: "free/soon/z", provider: "expires-soon", free: true },
+    { id: "paid/soon/p", provider: "expires-soon", free: false },
+    { id: "paid/no/q", provider: "no-expiry", free: false },
+  ];
+  const out = reorderByExpiry(ordered, expiryMap(credits));
+  assert.deepEqual(out.slice(0, 3).map((m) => m.id), [
+    "free/soon/z",
+    "free/late/y",
+    "free/no-expiry/x",
+  ]);
+  assert.deepEqual(out.slice(3).map((m) => m.id), [
+    "paid/soon/p",
+    "paid/no/q",
+  ]);
+  const firstPaid = out.findIndex((m) => m.free === false);
+  assert.ok(out.slice(0, firstPaid).every((m) => m.free !== false));
+});
+
+test("reorderByExpiry is a no-op without expiry data", () => {
+  const ordered = [
+    { id: "1", provider: "a", free: true },
+    { id: "2", provider: "b", free: true },
+  ];
+  assert.deepEqual(reorderByExpiry(ordered, expiryMap([])).map((m) => m.id), ["1", "2"]);
+  assert.deepEqual(reorderByExpiry([], expiryMap([])), []);
 });

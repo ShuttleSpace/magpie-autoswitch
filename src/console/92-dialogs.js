@@ -50,6 +50,66 @@
   if (setClearCooling) setClearCooling.addEventListener("click", function () {
     if (confirm("清空所有模型的冷却时间？")) action("/api/clear", {});
   });
+
+  // 设置面板：把编辑后的参数白名单 POST 到 /api/config。直接用 fetch 拿回
+  // { ok, error, changed }，避免依赖 action() 的 banner 反馈，改用行内提示。
+  async function saveConfig(payload, hintId, okText) {
+    var hint = document.getElementById(hintId);
+    try {
+      var res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      var data = await res.json();
+      state = data;
+      render();
+      if (hint) {
+        if (data.ok === false) {
+          hint.className = "set-hint err";
+          hint.textContent = "保存失败：" + (data.error || "未知错误");
+        } else {
+          hint.className = "set-hint ok";
+          hint.textContent = okText + (data.changed && data.changed.length ? "（已更新 " + data.changed.join(", ") + "）" : "（无变化）");
+        }
+      }
+    } catch (e) {
+      if (hint) {
+        hint.className = "set-hint err";
+        hint.textContent = "保存失败：" + (e && e.message ? e.message : e);
+      }
+    }
+  }
+  function fieldVal(id) {
+    var el = document.getElementById(id);
+    return el ? el.value : "";
+  }
+  var setStrategySave = document.getElementById("set-strategy-save");
+  if (setStrategySave) setStrategySave.addEventListener("click", function () {
+    var el = document.getElementById("set-strategy");
+    saveConfig({ strategy: el ? el.value : "free" }, "set-strategy-hint", "策略已保存");
+  });
+  var setCoreSave = document.getElementById("set-core-save");
+  if (setCoreSave) setCoreSave.addEventListener("click", function () {
+    saveConfig({
+      maxTries: fieldVal("set-maxtries"),
+      refreshSeconds: fieldVal("set-refresh-seconds"),
+      cooldownSeconds: fieldVal("set-cooldown"),
+      firstByteTimeoutSeconds: fieldVal("set-fbto"),
+    }, "set-core-hint", "核心调度参数已保存");
+  });
+  var setPaidSave = document.getElementById("set-paid-save");
+  if (setPaidSave) setPaidSave.addEventListener("click", function () {
+    var win = document.getElementById("set-paidwin");
+    var bal = document.getElementById("set-minbal");
+    var cooling = document.getElementById("set-trycooling");
+    saveConfig({
+      maxPaidTries: fieldVal("set-maxpaid"),
+      paidWindow: win ? (win.value.trim() || null) : null,
+      paidMinBalance: bal ? bal.value : 0,
+      tryCooling: cooling ? cooling.checked : undefined,
+    }, "set-paid-hint", "付费策略已保存");
+  });
   var notesBtn = document.getElementById("release-notes-btn");
   var notesEl = document.getElementById("release-notes");
   var notesLoaded = false;

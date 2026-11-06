@@ -79,3 +79,18 @@
     if (!parts.length) return "刚苏醒";
     return parts.join(" ");
   }
+  // 积分/配额到期时间的人话描述：超过一天说「N 天后」，否则说「N 小时后」。
+  // 返回空串表示没有到期信息。
+  function expiryText(resetAt) {
+    var at = Number(resetAt);
+    if (!Number.isFinite(at) || at <= 0) return "";
+    var left = at - Date.now();
+    if (left <= 0) return "已到期";
+    var d = Math.floor(left / 86400000);
+    var h = Math.floor((left % 86400000) / 3600000);
+    var m = Math.floor((left % 3600000) / 60000);
+    if (d >= 1) return d + " 天后到期";
+    if (h >= 1) return h + " 小时后到期";
+    if (m >= 1) return m + " 分钟后到期";
+    return "即将到期";
+  }

@@ -2,7 +2,7 @@
 // 产出 dist/magpie-autoswitch/ 目录（可直接 `magpie plugin add ./dist/magpie-autoswitch`）
 // 以及一份 dist/magpie-autoswitch-<version>.tgz（用于分发/发布）。
 //
-// 运行时必需：index.mjs、src/（含 console.html）、package.json、icon.png、README.md、RELEASE_NOTES.md、LICENSE。
+// 运行时必需：index.mjs、src/（含 console/ 分片）、package.json、icon.png、README.md、RELEASE_NOTES.md、LICENSE。
 // 不需要打进包：test/、node_modules/、lock 文件、日志、.gitignore、.DS_Store 等。
 
 import fs from "node:fs";

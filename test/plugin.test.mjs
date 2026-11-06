@@ -262,6 +262,13 @@ test("the console serves the page and its state on loopback", async () => {
   const html = await page.text();
   assert.match(html, /AUTOSWITCH/);
   assert.match(html, /id="settings-btn"/, "the topbar has a settings entry");
+  assert.match(html, /id="chart-outcomes"/, "chart containers are present");
+  assert.match(html, /\.chart-grid\s*\{/, "assembled CSS from src/console/*.css is inlined");
+  assert.match(html, /function renderCharts\(\)/, "assembled JS from src/console/*.js is inlined");
+  assert.doesNotMatch(html, /__CONSOLE_CSS__|__CONSOLE_JS__/, "no unreplaced placeholders");
+  // 拼接后的脚本必须是可解析的（用 new Function 做语法检查，不执行）。
+  const script = html.split("<script>\n")[1].split("\n</script>")[0];
+  assert.doesNotThrow(() => new Function(script));
   const state = await fetch(`${url}/api/state`);
   assert.equal(state.status, 200);
   assert.equal((await state.json()).now, 123);

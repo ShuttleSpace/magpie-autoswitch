@@ -1,0 +1,17 @@
+  /* ---- 选择提供商 dialog ---- */
+  #prov-dialog { border: 1px solid var(--line-strong); border-radius: 12px; padding: 0; max-width: 520px; width: calc(100vw - 48px); max-height: min(72vh, 560px); box-shadow: 0 18px 60px rgba(0,0,0,0.35); color: var(--ink); background: var(--panel); }
+  #prov-dialog::backdrop { background: rgba(2,6,23,0.55); backdrop-filter: blur(2px); }
+  .dlg-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .dlg-body { padding: 12px 16px 16px; overflow-y: auto; max-height: calc(min(72vh, 560px) - 58px); }
+  .dlg-list { display: flex; flex-direction: column; gap: 6px; }
+  .dlg-item { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2); transition: border-color .15s ease, background .15s ease; }
+  .dlg-item:hover { border-color: var(--line-strong); }
+  .dlg-item.selected { border-color: rgba(94,234,212,0.60); background: rgba(94,234,212,0.16); box-shadow: inset 3px 0 0 rgba(94,234,212,0.60); }
+  .dlg-item .prov-chip-check { width: 16px; height: 16px; cursor: pointer; accent-color: var(--teal); flex: 0 0 auto; }
+  .dlg-item .chip-ic { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; font-size: 13px; background: rgba(148,163,184,0.10); border: 1px solid var(--line); flex: 0 0 auto; }
+  .dlg-item.selected .chip-ic { background: rgba(94,234,212,0.15); border-color: rgba(94,234,212,0.35); }
+  .dlg-item .chip-name { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; font-weight: 600; word-break: break-all; flex: 1; min-width: 0; }
+  .dlg-item .chip-credit { color: var(--muted); font-size: 11px; }
+  .dlg-item .chip-credit b { color: var(--teal); font-weight: 600; }
+  .dlg-item .chip-credit-wrap { display: flex; gap: 8px; align-items: center; margin-left: auto; flex: 0 0 auto; }
+  .dlg-item .only-btn { padding: 3px 8px; font-size: 11px; flex: 0 0 auto; }

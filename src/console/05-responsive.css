@@ -1,0 +1,13 @@
+  @media (max-width: 920px) {
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid2 { grid-template-columns: 1fr; }
+    .splitter { display: none; }
+  }
+  @media (max-width: 560px) {
+    .shell { width: calc(100% - 24px); padding-top: 20px; }
+    header { flex-direction: column; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .stat .v { font-size: 23px; }
+    input[type="search"] { width: 100%; }
+  }
+

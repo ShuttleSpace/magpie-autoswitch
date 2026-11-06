@@ -272,6 +272,17 @@ npm run report:upstream -- --hours 24     # 或 --json
 
 它读 `~/.config/magpie/usage.jsonl`、`~/Library/Logs/magpie/app.log`、插件的 `traces.jsonl` / `state.json`，输出受限模型、慢尝试、首字节超时次数、紧张的配额与当前冷却项。
 
+## 控制台结构
+
+`src/console.html` 只保留 HTML 骨架和 `/*__CONSOLE_CSS__*/` / `/*__CONSOLE_JS__*/` 两个占位符；CSS 与 JS 按职责拆成 `src/console/` 下的分片（`01-base.css` … `08-charts.css`、`10-state.js` … `95-boot.js`）。`src/console.mjs` 在插件启动时按**固定顺序**读回并注入同一个 `<style>` / `<script>`，所以：
+
+- 浏览器看到的仍是单文件、单 IIFE，所有函数共享 `state / filter / provFocus` 等闭包变量；
+- CSP 不变（`default-src 'none'`，无额外静态请求），零构建工具、零依赖；
+- 分片顺序由 `src/console.mjs` 里的 `CSS_PARTS` / `JS_PARTS` 显式声明，新增分片要同时加进对应数组；
+- `npm test` 会对拼接结果做语法检查，确保占位符被替换、脚本可解析。
+
+统计图表用纯 SVG 绘制，口径说明见控制台「请求趋势」区块脚注：上方 5 个数字是**累计总量**，图表柱高是**各时间桶内的数量**，两者不可混淆。
+
 ## 已知限制
 
 - **只支持 Chat Completions 协议**。Magpie 会把 Anthropic Messages、Responses、Gemini 等请求翻译成 Chat 后再交给插件，所以大多数 Agent 都能用；插件自己不会直接说 Anthropic/Gemini 原生协议。
@@ -297,11 +308,13 @@ npm run report:upstream -- --hours 24 # 离线诊断上游限流
 ```text
 index.mjs              Magpie 入口
 src/plugin.mjs         provider/auth/fetch 钩子与切换主循环
-src/core.mjs           纯函数：发现、排序、冷却、重置时间解析
+src/core.mjs           纯函数：发现、排序、冷却、重置时间解析、统计聚合
 src/config.mjs         配置、状态、追踪文件
 src/gateway.mjs        访问 Magpie 网关
-src/console.mjs        本地 Web 控制台服务
-src/console.html       控制台页面
+src/console.mjs        本地 Web 控制台服务（启动时拼接 CSS/JS 分片）
+src/console.html       控制台 HTML 骨架（235 行）+ 两个占位符
+src/console/*.css      控制台样式分片（01–08，按固定顺序拼回）
+src/console/*.js       控制台脚本分片（10–95，同一个 IIFE 作用域）
 icon.png                       插件与控制台图标
 scripts/upstream-report.mjs    离线上游诊断
 docs/upstream-health-design.md 上游健康雷达设计

@@ -1,0 +1,33 @@
+  /* ---- 供应商 / 模型 双栏 + 可拖拽分隔 ---- */
+  .grid2 { display: grid; grid-template-columns: var(--prov-w, 34%) 8px 1fr; align-items: stretch; min-height: 540px; }
+  .pane { display: flex; flex-direction: column; min-width: 0; }
+  .pane-providers { min-width: 0; }
+  .pane-models { min-width: 0; }
+  .splitter { width: 8px; cursor: col-resize; background: linear-gradient(var(--line), var(--line)); border-radius: 4px; align-self: stretch; transition: background .15s ease; }
+  .splitter:hover, .splitter.dragging { background: var(--amber); }
+  .pane-scroll, .models-body { max-height: 560px; overflow-y: auto; }
+  .prov-list { display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
+  .prov-item {
+    display: flex; flex-direction: column; gap: 7px;
+    padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2);
+    cursor: pointer; transition: border-color .15s ease, background .15s ease;
+  }
+  .prov-item:hover { border-color: var(--line-strong); }
+  .prov-item.selected { border-color: rgba(94,234,212,0.60); background: rgba(94,234,212,0.16); box-shadow: inset 3px 0 0 rgba(94,234,212,0.60); }
+  .prov-item.has-credits { border-color: rgba(94,234,212,0.30); }
+  .prov-item .prov-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 9px; min-width: 0; }
+  .prov-item .prov-ic { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; font-size: 14px; background: rgba(148,163,184,0.10); border: 1px solid var(--line); flex: 0 0 auto; }
+  .prov-item.has-credits .prov-ic { background: rgba(94,234,212,0.12); border-color: rgba(94,234,212,0.30); }
+  .prov-item .prov-name { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; font-weight: 600; color: var(--ink); word-break: break-all; flex: 0 1 auto; min-width: 0; }
+  .prov-item.has-credits .prov-name { color: var(--teal); }
+  .prov-item .prov-actions { display: flex; gap: 6px; flex: 0 0 auto; margin-left: auto; }
+  .prov-item .prov-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 11.5px; color: var(--muted); min-width: 0; }
+  .prov-item .prov-stat { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .prov-item .prov-sub .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
+  .prov-item.healthy .prov-sub .dot { background: var(--green); }
+  .prov-item.degraded .prov-sub .dot { background: var(--amber); }
+  .prov-item.down .prov-sub .dot { background: var(--red); }
+  .prov-item .prov-credit { white-space: nowrap; font-size: 11px; color: var(--dim); }
+  .prov-item .prov-credit b { color: var(--teal); font-weight: 600; }
+  .prov-item .prov-actions { display: flex; gap: 6px; }
+

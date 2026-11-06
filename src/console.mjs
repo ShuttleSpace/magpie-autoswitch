@@ -3,7 +3,32 @@ import http from "node:http";
 import { loadConfig, configPath, writeJSON } from "./config.mjs";
 import { VERSION } from "./core.mjs";
 
-const PAGE = fs.readFileSync(new URL("./console.html", import.meta.url), "utf8");
+const TEMPLATE = fs.readFileSync(new URL("./console.html", import.meta.url), "utf8");
+
+// 控制台的 CSS/JS 按职责拆成 src/console/ 下的分片，启动时按固定顺序拼回
+// 同一个 <style>/<script>（同一个 IIFE 作用域），因此 CSP、闭包变量、
+// 测试断言都和单文件时完全一致，运行时没有额外请求。
+const CSS_PARTS = [
+  "01-base.css", "02-stats.css", "03-components.css", "04-dialogs.css",
+  "05-responsive.css", "06-panes.css", "07-prov-dialog.css", "08-charts.css",
+];
+const JS_PARTS = [
+  "10-state.js", "20-utils.js", "30-render-model.js", "40-render-provider.js",
+  "45-model-tree.js", "50-dom.js", "60-render-upstream.js", "65-charts.js",
+  "70-render.js", "75-banner.js", "80-api.js", "90-handlers.js",
+  "91-controls.js", "92-dialogs.js", "93-splitter.js", "95-boot.js",
+];
+
+function assemble() {
+  const read = (parts) => parts
+    .map((name) => fs.readFileSync(new URL(`./console/${name}`, import.meta.url), "utf8").replace(/\n$/, ""))
+    .join("\n");
+  return TEMPLATE
+    .replace("/*__CONSOLE_CSS__*/", () => read(CSS_PARTS))
+    .replace("/*__CONSOLE_JS__*/", () => read(JS_PARTS));
+}
+
+const PAGE = assemble();
 const ICON = fs.readFileSync(new URL("../icon.png", import.meta.url));
 const RELEASE_NOTES = (() => {
   try {

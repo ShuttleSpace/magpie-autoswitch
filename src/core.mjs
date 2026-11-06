@@ -6,7 +6,7 @@ export const PROVIDER = "free-switch";
 export const SELF_PROVIDERS = new Set([PROVIDER, `${PROVIDER}-plugin`]);
 
 // Bump alongside RELEASE_NOTES.md when shipping a change.
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 
 // Auto-switch strategy: how paid models participate in the failover pool.
 // "free"        — paid models are never tried automatically (default).
@@ -766,4 +766,81 @@ export function demoteUpstream(ordered, summary, now = Date.now()) {
     (limited.has(m?.id) ? late : keep).push(m);
   }
   return [...keep, ...late];
+}
+
+// ---- 统计图表数据（纯函数）----
+//
+// 口径固定，避免图表歧义：
+// - 每个「请求」= 一条 trace，结果互斥：成功 / 耗尽 / 取消 / 其他失败，四者相加 = 请求数。
+// - 「尝试」= trace.attempts[] 的长度；切换次数 = 尝试数 - 请求数（同一请求内换模型）。
+// - 时间桶按样本的最早/最晚时间等分，柱高 = 该桶内的请求数（不是累计值）。
+export function buildStatsCharts(traces, options = {}) {
+  const bucketCount = Math.max(4, Math.min(24, Math.trunc(Number(options.bucketCount) || 12)));
+  const rows = (Array.isArray(traces) ? traces : [])
+    .filter((t) => t && Number.isFinite(Number(t.at)) && Number(t.at) > 0)
+    .slice()
+    .sort((a, b) => Number(a.at) - Number(b.at));
+  const empty = {
+    bucketCount, bucketMs: 0, from: 0, to: 0, total: 0, buckets: [],
+    statuses: [], models: [], attempts: 0, switches: 0,
+    successes: 0, exhausted: 0, aborted: 0, failures: 0,
+  };
+  if (!rows.length) return empty;
+
+  const from = Number(rows[0].at);
+  const to = Number(rows[rows.length - 1].at);
+  const width = Math.max(1000, Math.ceil(Math.max(1, to - from) / bucketCount));
+  const buckets = Array.from({ length: bucketCount }, (_, i) => ({
+    index: i,
+    start: from + i * width,
+    end: from + (i + 1) * width,
+    requests: 0, successes: 0, exhausted: 0, aborted: 0, failures: 0,
+    attempts: 0, switches: 0, durations: [],
+  }));
+  const statusMap = new Map();
+  const modelMap = new Map();
+  for (const t of rows) {
+    const at = Number(t.at);
+    const i = Math.min(bucketCount - 1, Math.max(0, Math.floor((at - from) / width)));
+    const b = buckets[i];
+    b.requests++;
+    const attempts = Array.isArray(t.attempts) ? t.attempts : [];
+    const n = attempts.length || 1;
+    b.attempts += n;
+    b.switches += Math.max(0, n - 1);
+    if (t.ok === true) b.successes++;
+    else if (t.aborted === true) b.aborted++;
+    else if (t.exhausted === true) b.exhausted++;
+    else b.failures++;
+    const ms = Number(t.durationMs);
+    if (Number.isFinite(ms) && ms >= 0) b.durations.push(ms);
+    for (const a of attempts) {
+      const code = Number(a?.status) || 0;
+      statusMap.set(code, (statusMap.get(code) || 0) + 1);
+    }
+    if (t.ok === true && t.finalModel) {
+      const id = String(t.finalModel);
+      modelMap.set(id, (modelMap.get(id) || 0) + 1);
+    }
+  }
+  const percentile = (list, p) => {
+    if (!list.length) return 0;
+    const s = [...list].sort((a, b) => a - b);
+    return Math.round(s[Math.min(s.length - 1, Math.floor(s.length * p))]);
+  };
+  for (const b of buckets) {
+    b.p50Ms = percentile(b.durations, 0.5);
+    b.p90Ms = percentile(b.durations, 0.9);
+    delete b.durations;
+  }
+  const statuses = [...statusMap].map(([status, count]) => ({ status, count })).sort((a, b) => b.count - a.count);
+  const models = [...modelMap].map(([id, count]) => ({ id, count })).sort((a, b) => b.count - a.count).slice(0, 8);
+  const sum = (key) => buckets.reduce((s, b) => s + b[key], 0);
+  return {
+    bucketCount, bucketMs: width, from, to, total: rows.length,
+    buckets, statuses, models,
+    attempts: sum("attempts"), switches: sum("switches"),
+    successes: sum("successes"), exhausted: sum("exhausted"),
+    aborted: sum("aborted"), failures: sum("failures"),
+  };
 }

@@ -21,6 +21,7 @@ import {
   quotaPressure,
   stuckCalls,
   demoteUpstream,
+  buildStatsCharts,
   selectCandidates,
   shouldStop,
   supports,
@@ -467,4 +468,40 @@ test("499 is never a cooldown and long Retry-After is capped", () => {
   assert.equal(long.seconds, 1800, "a 5h Retry-After is capped at 30min");
   const short = cooldownFor({ status: 429, headers: new Headers({ "retry-after": "20" }), bodyText: "", now, config });
   assert.equal(short.seconds, 20);
+});
+
+test("buildStatsCharts buckets requests with mutually exclusive results", () => {
+  const now = Date.parse("2026-11-06T14:00:00+08:00");
+  const at = (m) => now - m * 60_000;
+  const trace = (m, extra = {}) => ({ at: at(m), ok: false, exhausted: false, attempts: [{ status: 502 }], durationMs: 1000, ...extra });
+  const rows = [
+    trace(50, { ok: true, finalModel: "zen/a", attempts: [{ status: 200 }] }),
+    trace(40, { ok: true, finalModel: "zen/a", attempts: [{ status: 429 }, { status: 200 }] }),
+    trace(30, { exhausted: true, attempts: [{ status: 429 }, { status: 502 }] }),
+    trace(20, { aborted: true, attempts: [{ status: 0 }] }),
+    trace(10, { attempts: [{ status: 400 }] }),
+  ];
+  const c = buildStatsCharts(rows, { bucketCount: 6 });
+  assert.equal(c.total, 5);
+  assert.equal(c.bucketCount, 6);
+  assert.equal(c.attempts, 7);
+  assert.equal(c.switches, 2, "attempts - requests");
+  assert.equal(c.successes + c.exhausted + c.aborted + c.failures, c.total, "results are mutually exclusive and exhaustive");
+  assert.equal(c.successes, 2);
+  assert.equal(c.exhausted, 1);
+  assert.equal(c.aborted, 1);
+  assert.equal(c.failures, 1);
+  assert.equal(c.buckets.reduce((s, b) => s + b.requests, 0), 5);
+  assert.deepEqual(c.models[0], { id: "zen/a", count: 2 }, "only successful requests count toward model usage");
+  assert.deepEqual(c.statuses.map((s) => s.status).sort(), [0, 200, 400, 429, 502].sort());
+  assert.ok(c.from <= c.to && c.bucketMs > 0);
+  assert.equal(buildStatsCharts([], {}).total, 0);
+  assert.equal(buildStatsCharts(null, {}).buckets.length, 0);
+});
+
+test("buildStatsCharts keeps a single trace in one bucket", () => {
+  const c = buildStatsCharts([{ at: Date.now(), ok: true, attempts: [{ status: 200 }], durationMs: 10 }], { bucketCount: 12 });
+  assert.equal(c.total, 1);
+  assert.equal(c.buckets.reduce((s, b) => s + b.requests, 0), 1);
+  assert.equal(c.bucketMs, 1000, "the minimum bucket width is 1s");
 });

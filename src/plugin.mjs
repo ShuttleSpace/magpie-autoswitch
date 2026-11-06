@@ -12,6 +12,7 @@ import {
   quotaPressure,
   stuckCalls,
   demoteUpstream,
+  buildStatsCharts,
   STRATEGIES,
   formatPaidWindow,
   parsePaidWindow,
@@ -1026,6 +1027,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         };
       }),
       traces: traces.slice(-50).reverse(),
+      statsCharts: buildStatsCharts(traces, { bucketCount: 12 }),
       activeModel: (() => {
         for (let i = traces.length - 1; i >= 0; i--) {
           const t = traces[i];

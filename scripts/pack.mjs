@@ -1,8 +1,8 @@
 // 把插件打包成 Magpie 需要的形态：只拷贝运行时必需的文件，
-// 产出 dist/magpie-free-switch/ 目录（可直接 `magpie plugin add ./dist/magpie-free-switch`）
-// 以及一份 dist/magpie-free-switch-<version>.tgz（用于分发/发布）。
+// 产出 dist/magpie-autoswitch/ 目录（可直接 `magpie plugin add ./dist/magpie-autoswitch`）
+// 以及一份 dist/magpie-autoswitch-<version>.tgz（用于分发/发布）。
 //
-// 运行时必需：index.mjs、src/（含 console.html）、package.json、icon.svg、README.md、LICENSE。
+// 运行时必需：index.mjs、src/（含 console.html）、package.json、icon.png、README.md、RELEASE_NOTES.md、LICENSE。
 // 不需要打进包：test/、node_modules/、lock 文件、日志、.gitignore、.DS_Store 等。
 
 import fs from "node:fs";
@@ -19,11 +19,11 @@ const pkg = readJSON(path.join(root, "package.json"));
 const version = String(pkg.version || "0.0.0");
 
 // 运行时必需的文件 / 目录（相对项目根）
-const INCLUDE = ["index.mjs", "src", "icon.svg", "README.md", "LICENSE"];
+const INCLUDE = ["index.mjs", "src", "icon.png", "README.md", "RELEASE_NOTES.md", "LICENSE"];
 
 const OUT_DIR = path.join(root, "dist");
-const BUNDLE = path.join(OUT_DIR, "magpie-free-switch");
-const TGZ = path.join(OUT_DIR, `magpie-free-switch-${version}.tgz`);
+const BUNDLE = path.join(OUT_DIR, "magpie-autoswitch");
+const TGZ = path.join(OUT_DIR, `magpie-autoswitch-${version}.tgz`);
 
 // 清掉旧的 dist
 fs.rmSync(OUT_DIR, { recursive: true, force: true });

@@ -1,4 +1,4 @@
-// Pure selection, cooldown and retry-parsing rules for Free Switch. Nothing
+// Pure selection, cooldown and retry-parsing rules for AutoSwitch. Nothing
 // here touches the network or the filesystem, so the behaviour can be tested
 // without a running magpie.
 
@@ -6,7 +6,7 @@ export const PROVIDER = "free-switch";
 export const SELF_PROVIDERS = new Set([PROVIDER, `${PROVIDER}-plugin`]);
 
 // Bump alongside RELEASE_NOTES.md when shipping a change.
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 // Auto-switch strategy: how paid models participate in the failover pool.
 // "free"        — paid models are never tried automatically (default).

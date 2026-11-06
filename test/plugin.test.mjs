@@ -245,10 +245,18 @@ test("the console serves the page and its state on loopback", async () => {
   assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/);
   const page = await fetch(`${url}/`);
   assert.equal(page.status, 200);
-  assert.match(await page.text(), /FREE \/ SWITCH/);
+  const html = await page.text();
+  assert.match(html, /AUTOSWITCH/);
+  assert.match(html, /id="settings-btn"/, "the topbar has a settings entry");
   const state = await fetch(`${url}/api/state`);
   assert.equal(state.status, 200);
   assert.equal((await state.json()).now, 123);
+  const icon = await fetch(`${url}/icon.png`);
+  assert.equal(icon.status, 200);
+  assert.equal(icon.headers.get("content-type"), "image/png");
+  const notes = await fetch(`${url}/api/release-notes`);
+  assert.equal(notes.status, 200);
+  assert.equal(typeof (await notes.json()).notes, "string");
   await consoleServer.stop();
   assert.equal(consoleServer.running, false);
 });
@@ -294,6 +302,43 @@ test("the preferred API toggles a model in config.json", async () => {
       body: JSON.stringify({}),
     });
     assert.equal(res.status, 400);
+    await consoleServer.stop();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("preferred-bulk sets all / inverts / clears the visible models", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    const configFile = path.join(dir, "free-switch", "config.json");
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    fs.writeFileSync(configFile, JSON.stringify({ preferredModels: ["zen/a"] }));
+    const consoleServer = createConsole({
+      getState: async () => ({ now: 1, stats: {}, config: { preferredModels: loadConfig().preferredModels }, models: [], traces: [] }),
+      refresh: async () => {},
+      clearCooldown: async () => {},
+    });
+    const url = await consoleServer.start(0);
+    const post = async (mode, models) => {
+      const res = await fetch(`${url}/api/preferred-bulk`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode, models }),
+      });
+      assert.equal(res.status, 200);
+      return (await res.json()).config.preferredModels;
+    };
+    assert.deepEqual(await post("all", ["zen/a", "zen/b", "zen/c"]), ["zen/a", "zen/b", "zen/c"]);
+    assert.deepEqual(await post("invert", ["zen/a", "zen/b", "zen/c"]), []);
+    assert.deepEqual(await post("none", ["zen/a", "zen/b", "zen/c"]), []);
+    const bad = await fetch(`${url}/api/preferred-bulk`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "nope", models: [] }),
+    });
+    assert.equal(bad.status, 400);
     await consoleServer.stop();
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -421,6 +466,10 @@ test("console disable / enable / switch endpoints route to the right handler", a
       if (model) state.manualSwitch = { model, at: 1 };
       return { ok: true };
     },
+    cancelSwitch: async () => {
+      state.manualSwitch = null;
+      return { ok: true };
+    },
     setStrategy: async (body) => {
       state.strategyBody = body;
       return { ok: true };
@@ -448,7 +497,13 @@ test("console disable / enable / switch endpoints route to the right handler", a
     body: JSON.stringify({ model: "zen/a" }),
   });
   assert.equal(res.status, 200);
-  assert.equal((await res.json()).manualSwitch.model, "zen/a");
+  var switched = await res.json();
+  assert.equal(switched.manualSwitch.model, "zen/a");
+  assert.equal(switched.switchedModel, "zen/a", "the endpoint echoes the pending switch");
+
+  res = await fetch(`${url}/api/cancel-switch`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).manualSwitch, null, "cancel clears the pending switch");
 
   res = await fetch(`${url}/api/strategy`, {
     method: "POST",
@@ -462,4 +517,53 @@ test("console disable / enable / switch endpoints route to the right handler", a
   res = await fetch(`${url}/api/nope`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   assert.equal(res.status, 404);
   await consoleServer.stop();
+});
+
+test("manual switch through the real console wiring forces the next request", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "free-switch", "config.json"), JSON.stringify({ console: true, consolePort: 0, refreshSeconds: 5 }));
+  const gateway = await fakeGateway({
+    models: models(),
+    chat(req, res, body) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "chat-1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+    },
+  });
+  process.env.MAGPIE_ADDR = gateway.url;
+  const logs = [];
+  const hooks = await createFreeSwitchPlugin({
+    magpie: { option: () => undefined },
+    client: { app: { log: (entry) => logs.push(entry?.body?.message ?? "") } },
+  });
+  let consoleURL = "";
+  for (let i = 0; i < 40 && !consoleURL; i++) {
+    consoleURL = logs.map((x) => String(x).match(/web console: (http:\/\/127\.0\.0\.1:\d+)/)?.[1]).find(Boolean) || "";
+    if (!consoleURL) await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.ok(consoleURL, "the plugin started its console");
+
+  const res = await fetch(`${consoleURL}/api/switch`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "zen/b" }),
+  });
+  assert.equal(res.status, 200);
+  const switched = await res.json();
+  assert.equal(switched.ok, true, "the real switch callback accepts the console's string model");
+  assert.equal(switched.manualSwitch?.model, "zen/b");
+
+  const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+  const reply = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(reply.status, 200);
+  assert.equal(reply.headers.get("x-free-switch-model"), "zen/b", "the forced model is used first");
+  assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/b"]);
+
+  await hooks.lifecycle.dispose();
+  await gateway.close();
 });

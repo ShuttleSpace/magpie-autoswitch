@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Free Switch · Console</title>
+<title>AutoSwitch · Magpie 模型自动切换</title>
+<link rel="icon" type="image/png" href="/icon.png">
 <style>
   :root {
     --bg: #0b0f14;
@@ -74,17 +75,10 @@
   .brand { display: flex; align-items: center; gap: 14px; }
   .mark {
     width: 46px; height: 46px; border-radius: 13px; flex: 0 0 auto;
-    background: linear-gradient(145deg, rgba(255,180,84,0.20), rgba(94,234,212,0.12));
-    border: 1px solid rgba(255,180,84,0.35);
-    display: grid; place-items: center;
-    box-shadow: 0 0 28px rgba(255,180,84,0.12);
+    overflow: hidden; background: transparent; border: 0; padding: 0;
+    box-shadow: 0 0 26px rgba(220,60,80,0.20);
   }
-  [data-theme="light"] .mark {
-    background: linear-gradient(145deg, rgba(217,119,6,0.15), rgba(15,118,110,0.10));
-    border-color: rgba(217,119,6,0.35);
-    box-shadow: 0 0 28px rgba(217,119,6,0.10);
-  }
-  .mark svg { width: 28px; height: 28px; }
+  .mark img { width: 100%; height: 100%; display: block; border-radius: 13px; }
   h1 { margin: 0; font-size: 24px; letter-spacing: 0.12em; font-weight: 700; }
   .sub { margin-top: 2px; color: var(--muted); font-size: 12.5px; letter-spacing: 0.03em; }
   .head-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
@@ -137,7 +131,11 @@
     box-shadow: var(--shadow); backdrop-filter: blur(12px);
   }
   .stat { padding: 15px 16px; min-height: 86px; }
-  .stat .k { color: var(--muted); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .stat .k { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .stat .k svg { width: 15px; height: 15px; flex: 0 0 auto; }
+  .stat.accent .k svg { color: var(--amber); }
+  .stat.teal .k svg { color: var(--teal); }
+  .stat.red .k svg { color: var(--red); }
   .stat .v { margin-top: 6px; font-size: 28px; line-height: 1.1; font-weight: 650; font-variant-numeric: tabular-nums; }
   .stat .v small { font-size: 13px; color: var(--muted); font-weight: 500; }
   .stat.accent .v { color: var(--amber); }
@@ -151,6 +149,8 @@
   .models-body { max-height: 640px; overflow: auto; }
 
   .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #pref-all, #pref-invert, #pref-none { padding: 5px 9px; font-size: 11.5px; }
+  .panel-head { flex-wrap: wrap; }
   input[type="search"] {
     font: inherit; color: var(--ink); width: 180px;
     border: 1px solid var(--line); background: rgba(8, 12, 17, 0.7);
@@ -205,9 +205,32 @@
   .arrow { color: var(--dim); }
   .empty { padding: 26px 8px; text-align: center; color: var(--dim); }
   .banner { display: none; margin-bottom: 14px; padding: 10px 14px; border-radius: 9px; border: 1px solid rgba(255,107,107,0.35); background: rgba(255,107,107,0.08); color: #ffd0d0; font-size: 12.5px; }
+  .banner.show { display: block; }
   [data-theme="light"] .banner { background: rgba(220,38,38,0.08); border-color: rgba(220,38,38,0.35); color: #dc2626; }
-  footer { margin-top: 18px; display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; color: var(--dim); font-size: 11.5px; }
-  footer code { color: var(--muted); }
+  .banner.ok { border-color: rgba(94,234,212,0.40); background: rgba(94,234,212,0.10); color: var(--teal); }
+  [data-theme="light"] .banner.ok { background: rgba(13,148,136,0.08); border-color: rgba(13,148,136,0.35); color: #0f766e; }
+  .pending-bar { border-color: rgba(255,180,84,0.42); background: rgba(255,180,84,0.09); }
+  .pending-bar .active-dot { background: var(--amber); box-shadow: 0 0 0 0 rgba(255,180,84,0.5); }
+  .pending-bar .pending-model { color: var(--amber); font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; word-break: break-all; }
+
+  /* ---- 设置 dialog ---- */
+  #settings-dialog { border: 1px solid var(--line-strong); border-radius: 12px; padding: 0; max-width: 640px; width: calc(100vw - 48px); max-height: min(80vh, 680px); box-shadow: 0 18px 60px rgba(0,0,0,0.35); color: var(--ink); background: var(--panel); }
+  #settings-dialog::backdrop { background: rgba(2,6,23,0.55); backdrop-filter: blur(2px); }
+  .set-section { margin-bottom: 20px; }
+  .set-section:last-child { margin-bottom: 0; }
+  .set-title { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); font-weight: 650; margin-bottom: 9px; }
+  .set-grid { display: grid; grid-template-columns: 118px 1fr; gap: 7px 12px; font-size: 12.5px; }
+  .set-grid dt { color: var(--muted); }
+  .set-grid dd { margin: 0; color: var(--ink); min-width: 0; word-break: break-all; }
+  .set-grid code { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; color: var(--teal); }
+  .set-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .notes { margin-top: 10px; max-height: 300px; overflow: auto; padding: 12px 14px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2); font-size: 12.5px; line-height: 1.6; }
+  .notes h1, .notes h2, .notes h3 { margin: 14px 0 6px; font-size: 13.5px; color: var(--ink); }
+  .notes h1:first-child, .notes h2:first-child, .notes h3:first-child { margin-top: 0; }
+  .notes ul { margin: 4px 0 8px; padding-left: 20px; }
+  .notes li { margin: 3px 0; color: var(--muted); }
+  .notes p { margin: 5px 0; color: var(--muted); }
+  .notes code { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-size: 11.5px; color: var(--teal); }
   @media (max-width: 920px) {
     .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .grid2 { grid-template-columns: 1fr; }
@@ -270,6 +293,7 @@
   .dlg-item .chip-credit { color: var(--muted); font-size: 11px; }
   .dlg-item .chip-credit b { color: var(--teal); font-weight: 600; }
   .dlg-item .chip-credit-wrap { display: flex; gap: 8px; align-items: center; margin-left: auto; flex: 0 0 auto; }
+  .dlg-item .only-btn { padding: 3px 8px; font-size: 11px; flex: 0 0 auto; }
 </style>
 </head>
 <body>
@@ -277,23 +301,18 @@
   <header>
     <div class="brand">
       <div class="mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32" fill="none">
-          <path d="M6 11h17l-4-4" stroke="#ffb454" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M26 21H9l4 4" stroke="#5eead4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-          <circle cx="16" cy="16" r="2" fill="#e6edf3"/>
-        </svg>
+        <img src="/icon.png" alt="">
       </div>
       <div>
-        <h1>FREE / SWITCH</h1>
-        <div class="sub">Magpie 免费模型自动切换 · 冷却与调用追踪</div>
+        <h1>AUTOSWITCH</h1>
+        <div class="sub">Magpie 模型自动切换 · 冷却、付费策略与调用追踪</div>
       </div>
     </div>
     <div class="head-right">
       <span class="pill"><span id="health-dot" class="dot"></span><span id="health-text">连接中</span></span>
       <button id="theme-toggle" class="ghost" type="button" title="切换主题">🌓</button>
-      <button id="prov-picker-btn" class="ghost" type="button" title="选择哪些供应商参与免费模型自动切换">选择提供商</button>
-      <button id="refresh" class="ghost" type="button">刷新模型</button>
-      <button id="clear" class="ghost danger" type="button">清空冷却</button>
+      <button id="prov-picker-btn" class="ghost" type="button" title="选择哪些供应商参与自动切换">选择提供商</button>
+      <button id="settings-btn" class="ghost" type="button" title="设置、运行信息与更新日志">⚙ 设置</button>
     </div>
   </header>
 
@@ -308,12 +327,50 @@
     <span class="dim" id="active-at"></span>
   </div>
 
+  <div id="pending-bar" class="active-bar pending-bar" hidden>
+    <span class="active-dot"></span>
+    <span class="muted">待切换</span>
+    <span class="pending-model" id="pending-model"></span>
+    <span class="dim">下一次请求强制使用此模型</span>
+    <button id="pending-cancel" class="ghost" type="button" title="取消这次强制切换">取消</button>
+  </div>
+
   <section class="stats">
-    <div class="card stat accent"><div class="k">Requests</div><div class="v" id="s-requests">0</div></div>
-    <div class="card stat teal"><div class="k">Switches</div><div class="v" id="s-switches">0</div></div>
-    <div class="card stat"><div class="k">Success</div><div class="v" id="s-success">0 <small id="s-rate"></small></div></div>
-    <div class="card stat red"><div class="k">Exhausted</div><div class="v" id="s-exhausted">0</div></div>
-    <div class="card stat"><div class="k">Cooling</div><div class="v" id="s-cooling">0 <small id="s-awake"></small></div></div>
+    <div class="card stat accent" title="收到的请求总数">
+      <div class="k">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 2.5-13 5.3 5 2 2 5 6-12.3Z"/><path d="m7.5 9.8 4.2-4.2"/></svg>
+        <span>请求</span>
+      </div>
+      <div class="v" id="s-requests">0</div>
+    </div>
+    <div class="card stat teal" title="发生模型切换的次数">
+      <div class="k">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h4l5 7h3.5"/><path d="M2.5 12.5h4l1.6-2.2"/><path d="m12.5 2.5 3 3-3 3"/><path d="m12.5 9.5 3 3-3 3"/><path d="M2.5 5.5h1"/><path d="M15 5.5h.5"/></svg>
+        <span>切换</span>
+      </div>
+      <div class="v" id="s-switches">0</div>
+    </div>
+    <div class="card stat" title="成功返回的请求数与成功率">
+      <div class="k">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="6.6"/><path d="m5.8 9.2 2.1 2.1 4.3-4.6"/></svg>
+        <span>成功</span>
+      </div>
+      <div class="v" id="s-success">0 <small id="s-rate"></small></div>
+    </div>
+    <div class="card stat red" title="所有候选都失败、没有可用模型的请求数">
+      <div class="k">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="6.6"/><path d="m4.4 4.4 9.2 9.2"/></svg>
+        <span>耗尽</span>
+      </div>
+      <div class="v" id="s-exhausted">0</div>
+    </div>
+    <div class="card stat" title="正在冷却的模型数与苏醒数">
+      <div class="k">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.8v14.4"/><path d="m3.1 5.2 11.8 7.6"/><path d="m14.9 5.2-11.8 7.6"/><path d="m9 1.8-1.8 2M9 1.8l1.8 2M9 16.2l-1.8-2M9 16.2l1.8-2"/></svg>
+        <span>冷却</span>
+      </div>
+      <div class="v" id="s-cooling">0 <small id="s-awake"></small></div>
+    </div>
   </section>
 
   <div class="grid2" id="grid2">
@@ -346,6 +403,11 @@
             <input id="paid-window" class="select" type="text" size="11" placeholder="22:00-06:00" title="自动使用付费模型的时间窗口（本地时间），留空表示全天；支持跨午夜">
             <input id="paid-min-balance" class="select" type="number" min="0" step="1" size="6" placeholder="余额下限" title="供应商余额低于该值时不再自动使用其付费模型；留空或 0 表示不限制">
           </span>
+          <span class="toolbar" title="对当前可见（含过滤结果）的模型批量设置偏好">
+            <button id="pref-all" class="ghost" type="button" title="把当前可见模型全部设为偏好">全选</button>
+            <button id="pref-invert" class="ghost" type="button" title="反转当前可见模型的偏好">反选</button>
+            <button id="pref-none" class="ghost" type="button" title="清除当前可见模型的偏好">清空</button>
+          </span>
           <input id="filter" type="search" placeholder="过滤模型 / 供应商" autocomplete="off">
         </div>
       </div>
@@ -361,6 +423,9 @@
       <div class="panel-title"><strong>选择提供商</strong> <span id="prov-count" class="dim"></span></div>
       <div class="toolbar">
         <input id="prov-search" type="search" placeholder="过滤提供商" autocomplete="off">
+        <button id="prov-select-all" class="ghost" type="button" title="勾选全部提供商">全选</button>
+        <button id="prov-invert" class="ghost" type="button" title="反选当前生效的提供商">反选</button>
+        <button id="prov-refresh" class="ghost" type="button" title="重新读取 Magpie 网关的模型目录">刷新目录</button>
         <button id="prov-dialog-close" class="ghost" type="button">关闭</button>
       </div>
     </div>
@@ -370,12 +435,40 @@
     </div>
   </dialog>
 
-  <footer>
-    <div>Gateway <code id="gateway">—</code></div>
-    <div>版本 <code id="version">—</code></div>
-    <div>配置 <code id="config-path">—</code></div>
-    <div>只监听 127.0.0.1 · 每 2 秒自动刷新</div>
-  </footer>
+  <dialog id="settings-dialog">
+    <div class="dlg-head">
+      <div class="panel-title"><strong>设置</strong> <span id="set-version-head" class="dim"></span></div>
+      <div class="toolbar">
+        <button id="settings-close" class="ghost" type="button">关闭</button>
+      </div>
+    </div>
+    <div class="dlg-body">
+      <div class="set-section">
+        <div class="set-title">运行信息</div>
+        <dl class="set-grid">
+          <dt>Gateway</dt><dd><code id="set-gateway">—</code></dd>
+          <dt>版本</dt><dd id="set-version">—</dd>
+          <dt>配置文件</dt><dd><code id="set-config">—</code></dd>
+          <dt>控制台</dt><dd id="set-console">—</dd>
+          <dt>自动刷新</dt><dd>界面每 2 秒 · 模型列表每 <span id="set-refresh">60</span> 秒</dd>
+          <dt>模型发现</dt><dd id="set-discovered">—</dd>
+          <dt>模型</dt><dd id="set-models">—</dd>
+        </dl>
+      </div>
+      <div class="set-section">
+        <div class="set-title">操作</div>
+        <div class="set-actions">
+          <button id="set-refresh-models" class="ghost" type="button" title="一次性重新读取 Magpie 网关的模型目录（所有供应商）">刷新模型列表</button>
+          <button id="set-clear-cooling" class="ghost danger" type="button">清空所有冷却</button>
+        </div>
+      </div>
+      <div class="set-section">
+        <div class="set-title">更新日志</div>
+        <button id="release-notes-btn" class="ghost" type="button">查看 Release Notes</button>
+        <div id="release-notes" class="notes" hidden></div>
+      </div>
+    </div>
+  </dialog>
 </div>
 <script>
 (function () {
@@ -386,6 +479,7 @@
   var provFocus = "";
   var loading = false;
   var sortMode = "priority";
+  var visibleIds = [];
 
   // ---- 主题：跟随系统，手动可覆盖 ----
   var THEME_KEY = "free-switch-theme";
@@ -427,6 +521,57 @@
   }
   function n(value) {
     return Number(value || 0).toLocaleString("zh-CN");
+  }
+  // Minimal markdown (headings, bullets, paragraphs, inline code/bold) for the
+  // bundled Release Notes. Input is escaped before any tag is emitted.
+  function renderNotes(markdown) {
+    function inlineText(text) {
+      return esc(text)
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    }
+    var out = [];
+    var para = [];
+    var inList = false;
+    function flushPara() {
+      if (para.length) {
+        out.push("<p>" + inlineText(para.join(" ")) + "</p>");
+        para = [];
+      }
+    }
+    function closeList() {
+      if (inList) {
+        out.push("</ul>");
+        inList = false;
+      }
+    }
+    String(markdown || "").split(/\r?\n/).forEach(function (line) {
+      if (/^###\s+/.test(line)) {
+        flushPara(); closeList();
+        out.push("<h3>" + inlineText(line.replace(/^###\s+/, "")) + "</h3>");
+      } else if (/^##\s+/.test(line)) {
+        flushPara(); closeList();
+        out.push("<h2>" + inlineText(line.replace(/^##\s+/, "")) + "</h2>");
+      } else if (/^#\s+/.test(line)) {
+        flushPara(); closeList();
+        out.push("<h1>" + inlineText(line.replace(/^#\s+/, "")) + "</h1>");
+      } else if (/^\s*[-*]\s+/.test(line)) {
+        flushPara();
+        if (!inList) {
+          out.push("<ul>");
+          inList = true;
+        }
+        out.push("<li>" + inlineText(line.replace(/^\s*[-*]\s+/, "")) + "</li>");
+      } else if (!line.trim()) {
+        flushPara(); closeList();
+      } else {
+        closeList();
+        para.push(line.trim());
+      }
+    });
+    flushPara();
+    closeList();
+    return out.join("");
   }
   function clock(ts) {
     if (!ts) return "—";
@@ -562,6 +707,7 @@
           '<span class="chip-name">' + esc(p) + "</span>" +
           freeTag +
           '<span class="chip-credit-wrap">' + creditText + disabledMark + "</span>" +
+          '<button class="ghost only-btn" data-only-provider="' + esc(p) + '" type="button" title="只选这一个提供商">仅选</button>' +
         "</label>"
       );
     });
@@ -629,6 +775,7 @@
       }
       return compareModels(a, b, sortMode);
     });
+    visibleIds = list.map(function (m) { return m.id; });
     return list.map(function (m) { return modelRow(m, activeId); }).join("");
   }
   function txt(id, value) {
@@ -638,6 +785,12 @@
   function html(id, value) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = value == null ? "" : value;
+  }
+  // 轮询每 2 秒重绘；内容没变时不替换 innerHTML，避免用户点击时按钮被卸载。
+  function htmlIfChanged(id, value) {
+    var el = document.getElementById(id);
+    var next = value == null ? "" : value;
+    if (el && el.innerHTML !== next) el.innerHTML = next;
   }
   function hidden(id, isHidden) {
     var el = document.getElementById(id);
@@ -662,11 +815,16 @@
     txt("s-cooling", n(cooling));
     txt("s-awake", models.length ? "/ " + n(awake) + " 苏醒" : "");
     txt("model-count", models.length ? "· " + models.length + (preferredCount ? " · " + preferredCount + " 偏好" : "") : "");
-    txt("gateway", state.gateway || "—");
-    txt("version", state.version || "—");
-    txt("config-path", state.configFile || "—");
 
     var cfg = state.config || {};
+    txt("set-version-head", state.version ? "· v" + state.version : "");
+    txt("set-version", state.version || "—");
+    txt("set-gateway", state.gateway || "—");
+    txt("set-config", state.configFile || "—");
+    txt("set-console", state.console && state.console.running ? "127.0.0.1:" + (state.console.port || "—") + " · 仅本机" : "未启动");
+    txt("set-refresh", cfg.refreshSeconds ? String(cfg.refreshSeconds) : "—");
+    txt("set-discovered", state.discoveredAt ? clock(state.discoveredAt) : (state.discoveryError ? "失败：" + state.discoveryError : "尚未发现"));
+    txt("set-models", (Array.isArray(state.catalog) ? state.catalog.length : models.length) + " 个目录模型 · " + models.length + " 个免费");
     var strategySelect = document.getElementById("strategy");
     if (strategySelect) strategySelect.value = cfg.strategy || "free";
     var paidPolicyEl = document.getElementById("paid-policy");
@@ -699,7 +857,7 @@
     selProviders.forEach(function (p) { selSet[p] = true; });
     var allProviders = state.allProviders || [];
     var dlgHTML = renderProviderDialogRows(allProviders, models, selSet, creditMap, provDisabledObj);
-    html("dlg-prov-list", dlgHTML);
+    htmlIfChanged("dlg-prov-list", dlgHTML);
     hidden("dlg-prov-empty", !!dlgHTML);
     txt("prov-count", allProviders.length ? "· " + allProviders.length : "");
 
@@ -721,7 +879,7 @@
     });
 
     var selHTML = renderSelectedProviders(selProviders, models, creditMap, provDisabledObj, paidCounts);
-    html("sel-prov-list", selHTML);
+    htmlIfChanged("sel-prov-list", selHTML);
     hidden("sel-prov-empty", !!selHTML);
     txt("sel-count", selProviders.length ? "· " + selProviders.length : "");
 
@@ -733,7 +891,8 @@
       ? "· " + visibleModels.length + (provFocus ? " · " + provFocus : "")
       : provFocus ? "· " + provFocus : "");
     var modelHTML = modelTree(visibleModels, state.activeModel ? state.activeModel.id : null, sortMode);
-    html("models", modelHTML);
+    var modelsEl = document.getElementById("models");
+    if (modelsEl && modelsEl.innerHTML !== modelHTML) modelsEl.innerHTML = modelHTML;
     hidden("models-empty", !!modelHTML);
     if (state.activeModel && state.activeModel.id) {
       hidden("active-bar", false);
@@ -744,12 +903,23 @@
     } else {
       hidden("active-bar", true);
     }
+    var pendingModel = state.manualSwitch && state.manualSwitch.model ? state.manualSwitch.model : "";
+    hidden("pending-bar", !pendingModel);
+    if (pendingModel) txt("pending-model", pendingModel);
   }
-  function banner(message) {
+  var bannerTimer = null;
+  function banner(message, kind) {
     var el = document.getElementById("banner");
     if (!el) return;
     el.textContent = message || "";
-    el.className = "banner" + (message ? " show" : "");
+    el.className = "banner" + (message ? " show" : "") + (message && kind === "ok" ? " ok" : "");
+    if (bannerTimer) {
+      clearTimeout(bannerTimer);
+      bannerTimer = null;
+    }
+    if (message) {
+      bannerTimer = setTimeout(function () { banner(""); }, 8000);
+    }
   }
   async function load() {
     if (loading) return;
@@ -758,7 +928,6 @@
       var res = await fetch("/api/state", { cache: "no-store" });
       if (!res.ok) throw new Error("HTTP " + res.status);
       state = await res.json();
-      banner("");
       render();
     } catch (e) {
       banner("控制台无法读取状态：" + (e && e.message ? e.message : e));
@@ -769,7 +938,7 @@
       loading = false;
     }
   }
-  async function action(path, body) {
+  async function action(path, body, successMessage, okKind) {
     try {
       var res = await fetch(path, {
         method: "POST",
@@ -777,8 +946,13 @@
         body: JSON.stringify(body || {}),
       });
       if (!res.ok) throw new Error("HTTP " + res.status);
-      state = await res.json();
-      banner("");
+      var next = await res.json();
+      state = next;
+      if (next && next.ok === false) {
+        banner("操作失败：" + (next.error || "插件拒绝了该操作"));
+      } else {
+        banner(successMessage || "", okKind);
+      }
       render();
     } catch (e) {
       banner("操作失败：" + (e && e.message ? e.message : e));
@@ -813,7 +987,13 @@
       if (swPaidRow) {
         if (!window.confirm("手动切换到付费模型 " + swModel + "：下次请求将强制使用该模型，可能产生实际费用。确定继续？")) return;
       }
-      action("/api/switch", { model: swModel });
+      action("/api/switch", { model: swModel }, "已设置：下一次请求强制使用 " + swModel, "ok");
+      return;
+    }
+    var cancelPending = t.closest("#pending-cancel");
+    if (cancelPending) {
+      ev.stopPropagation();
+      action("/api/cancel-switch", {}, "已取消待切换", "ok");
       return;
     }
     var disProv = t.closest("[data-disable-provider]");
@@ -826,6 +1006,13 @@
     if (enProv) {
       ev.stopPropagation();
       action("/api/enable", { provider: enProv.getAttribute("data-enable-provider") });
+      return;
+    }
+    var onlyProv = t.closest("[data-only-provider]");
+    if (onlyProv) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      action("/api/provider", { provider: onlyProv.getAttribute("data-only-provider") });
       return;
     }
     var provFilterClick = t.closest("[data-prov-filter]");
@@ -904,6 +1091,23 @@
     var v = Number(ev.target.value);
     action("/api/strategy", paidPolicy({ paidMinBalance: Number.isFinite(v) && v > 0 ? v : 0 }));
   });
+  // 对当前可见（含过滤结果）的免费模型批量设置偏好
+  function bulkPref(mode) {
+    var ids = visibleIds.filter(function (id) {
+      return (state && state.models ? state.models : []).some(function (m) { return m.id === id; });
+    });
+    if (!ids.length) {
+      banner("当前没有可操作的免费模型");
+      return;
+    }
+    action("/api/preferred-bulk", { models: ids, mode: mode }, "已更新 " + ids.length + " 个可见模型的偏好", "ok");
+  }
+  var prefAll = document.getElementById("pref-all");
+  if (prefAll) prefAll.addEventListener("click", function () { bulkPref("all"); });
+  var prefInvert = document.getElementById("pref-invert");
+  if (prefInvert) prefInvert.addEventListener("click", function () { bulkPref("invert"); });
+  var prefNone = document.getElementById("pref-none");
+  if (prefNone) prefNone.addEventListener("click", function () { bulkPref("none"); });
   var provSearchEl = document.getElementById("prov-search");
   if (provSearchEl) provSearchEl.addEventListener("input", function (ev) {
     provSearch = ev.target.value || "";
@@ -917,6 +1121,55 @@
   if (provDialogClose && provDialog) provDialogClose.addEventListener("click", function () { provDialog.close(); });
   if (provDialog) provDialog.addEventListener("click", function (ev) {
     if (ev.target === provDialog) provDialog.close();
+  });
+  function allProviderIds() {
+    return (state && state.allProviders ? state.allProviders : []).map(function (p) { return p.id || p; }).filter(Boolean);
+  }
+  var provSelectAll = document.getElementById("prov-select-all");
+  if (provSelectAll) provSelectAll.addEventListener("click", function () {
+    action("/api/providers", { providers: allProviderIds() });
+  });
+  var provInvert = document.getElementById("prov-invert");
+  if (provInvert) provInvert.addEventListener("click", function () {
+    var current = {};
+    effectiveProviders(state.models || [], state.config && state.config.includeProviders).forEach(function (p) { current[p] = true; });
+    var next = allProviderIds().filter(function (p) { return !current[p]; });
+    action("/api/providers", { providers: next });
+  });
+  var provRefreshBtn = document.getElementById("prov-refresh");
+  if (provRefreshBtn) provRefreshBtn.addEventListener("click", function () { action("/api/refresh"); });
+
+  // ---- 设置 dialog：运行信息、刷新、更新日志 ----
+  var settingsDialog = document.getElementById("settings-dialog");
+  var settingsBtn = document.getElementById("settings-btn");
+  var settingsClose = document.getElementById("settings-close");
+  if (settingsBtn && settingsDialog) settingsBtn.addEventListener("click", function () { settingsDialog.showModal(); });
+  if (settingsClose && settingsDialog) settingsClose.addEventListener("click", function () { settingsDialog.close(); });
+  if (settingsDialog) settingsDialog.addEventListener("click", function (ev) {
+    if (ev.target === settingsDialog) settingsDialog.close();
+  });
+  var setRefreshModels = document.getElementById("set-refresh-models");
+  if (setRefreshModels) setRefreshModels.addEventListener("click", function () { action("/api/refresh"); });
+  var setClearCooling = document.getElementById("set-clear-cooling");
+  if (setClearCooling) setClearCooling.addEventListener("click", function () {
+    if (confirm("清空所有模型的冷却时间？")) action("/api/clear", {});
+  });
+  var notesBtn = document.getElementById("release-notes-btn");
+  var notesEl = document.getElementById("release-notes");
+  var notesLoaded = false;
+  if (notesBtn && notesEl) notesBtn.addEventListener("click", async function () {
+    notesEl.hidden = !notesEl.hidden;
+    notesBtn.textContent = notesEl.hidden ? "查看 Release Notes" : "收起 Release Notes";
+    if (notesEl.hidden || notesLoaded) return;
+    notesLoaded = true;
+    notesEl.textContent = "加载中…";
+    try {
+      var res = await fetch("/api/release-notes", { cache: "no-store" });
+      var data = await res.json();
+      notesEl.innerHTML = renderNotes(data && data.notes ? data.notes : "暂无更新日志");
+    } catch (e) {
+      notesEl.textContent = "读取失败：" + (e && e.message ? e.message : e);
+    }
   });
   // 拖拽分隔条调整左右栏宽度
   (function setupSplitter() {
@@ -946,12 +1199,6 @@
       document.addEventListener("mouseup", onUp);
     });
   })();
-  var refreshEl = document.getElementById("refresh");
-  if (refreshEl) refreshEl.addEventListener("click", function () { action("/api/refresh"); });
-  var clearEl = document.getElementById("clear");
-  if (clearEl) clearEl.addEventListener("click", function () {
-    if (confirm("清空所有模型的冷却时间？")) action("/api/clear", {});
-  });
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) load();
   });

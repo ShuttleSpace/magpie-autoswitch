@@ -1,8 +1,17 @@
 import fs from "node:fs";
 import http from "node:http";
 import { loadConfig, configPath, writeJSON } from "./config.mjs";
+import { VERSION } from "./core.mjs";
 
 const PAGE = fs.readFileSync(new URL("./console.html", import.meta.url), "utf8");
+const ICON = fs.readFileSync(new URL("../icon.png", import.meta.url));
+const RELEASE_NOTES = (() => {
+  try {
+    return fs.readFileSync(new URL("../RELEASE_NOTES.md", import.meta.url), "utf8");
+  } catch {
+    return "";
+  }
+})();
 
 function json(res, status, value) {
   const body = `${JSON.stringify(value)}\n`;
@@ -48,7 +57,7 @@ async function readBody(req, max = 4096) {
 // A tiny loopback-only console. It is read-only except for refreshing the
 // catalog and clearing a cooldown, so it needs no token; it never listens on
 // anything but 127.0.0.1.
-export function createConsole({ getState, refresh, clearCooldown, disable, enable, switch: setManualSwitch, setStrategy }) {
+export function createConsole({ getState, refresh, clearCooldown, disable, enable, switch: setManualSwitch, cancelSwitch, setStrategy }) {
   let server;
   let port = 0;
   let requestedPort = 0;
@@ -63,6 +72,18 @@ export function createConsole({ getState, refresh, clearCooldown, disable, enabl
       }
       if (req.method === "GET" && url.pathname === "/api/health") {
         return json(res, 200, { ok: true, port, lastError: lastError ?? null });
+      }
+      if (req.method === "GET" && url.pathname === "/icon.png") {
+        res.writeHead(200, {
+          "content-type": "image/png",
+          "content-length": ICON.length,
+          "cache-control": "public, max-age=86400",
+          "x-content-type-options": "nosniff",
+        });
+        return res.end(ICON);
+      }
+      if (req.method === "GET" && url.pathname === "/api/release-notes") {
+        return json(res, 200, { version: VERSION, notes: RELEASE_NOTES });
       }
       if (req.method === "GET" && url.pathname === "/api/state") {
         return json(res, 200, await getState());
@@ -92,7 +113,12 @@ export function createConsole({ getState, refresh, clearCooldown, disable, enabl
         const body = await readBody(req);
         const result = await setManualSwitch?.(body?.model);
         const state = await getState();
-        return json(res, 200, { ...state, ok: result?.ok !== false });
+        return json(res, 200, { ...state, ok: result?.ok !== false, error: result?.error, switchedModel: result?.ok === false ? null : (state.manualSwitch?.model ?? null) });
+      }
+      if (req.method === "POST" && url.pathname === "/api/cancel-switch") {
+        const result = await cancelSwitch?.();
+        const state = await getState();
+        return json(res, 200, { ...state, ok: result?.ok !== false, error: result?.error });
       }
       if (req.method === "POST" && url.pathname === "/api/strategy") {
         const body = await readBody(req);
@@ -138,6 +164,32 @@ export function createConsole({ getState, refresh, clearCooldown, disable, enabl
           preferredModels.push(modelId);
         }
         config.preferredModels = preferredModels;
+        writeJSON(configPath(), config);
+        return json(res, 200, await getState());
+      }
+      if (req.method === "POST" && url.pathname === "/api/preferred-bulk") {
+        const body = await readBody(req);
+        const ids = Array.isArray(body?.models) ? [...new Set(body.models.filter((m) => typeof m === "string" && m.trim()).map((m) => m.trim()))] : [];
+        const mode = body?.mode;
+        if (!["all", "invert", "none"].includes(mode)) return json(res, 400, { error: "mode must be all | invert | none" });
+        const config = loadConfig();
+        const current = Array.isArray(config.preferredModels) ? [...config.preferredModels] : [];
+        let next;
+        if (mode === "all") {
+          next = [...current];
+          for (const id of ids) if (!next.includes(id)) next.push(id);
+        } else if (mode === "none") {
+          const drop = new Set(ids);
+          next = current.filter((p) => !drop.has(p));
+        } else {
+          const set = new Set(current);
+          for (const id of ids) {
+            if (set.has(id)) set.delete(id);
+            else set.add(id);
+          }
+          next = [...set];
+        }
+        config.preferredModels = next;
         writeJSON(configPath(), config);
         return json(res, 200, await getState());
       }

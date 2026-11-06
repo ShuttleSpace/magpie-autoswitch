@@ -30,9 +30,9 @@ const MAX_PREFIX = 16 * 1024;
 let providerIcon;
 
 function iconURI() {
-  if (providerIcon) return providerIcon;
+  if (providerIcon !== undefined) return providerIcon;
   try {
-    providerIcon = `data:image/svg+xml;base64,${fs.readFileSync(new URL("../icon.svg", import.meta.url)).toString("base64")}`;
+    providerIcon = `data:image/png;base64,${fs.readFileSync(new URL("../icon.png", import.meta.url)).toString("base64")}`;
   } catch {
     providerIcon = "";
   }
@@ -63,7 +63,7 @@ function modelDef(count = 0, maxContext = 0) {
   return {
     id: "auto",
     providerID: PROVIDER,
-    name: count > 0 ? `Free Switch · Auto (${count})` : "Free Switch · Auto",
+    name: count > 0 ? `AutoSwitch · Auto (${count})` : "AutoSwitch · Auto",
     api: { id: "auto", url: BASE, npm: SDK },
     limit: { context, output },
     capabilities: {
@@ -273,7 +273,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     clearCooldown: (model) => clearCooldown(model),
     disable: (body) => disableWith(body),
     enable: (body) => enableWith(body),
-    switch: (body) => setManualSwitch(body?.model),
+    switch: (value) => setManualSwitch(typeof value === "string" ? value : value?.model),
+    cancelSwitch: () => cancelManualSwitch(),
     setStrategy: (strategy) => setStrategy(strategy),
   });
 
@@ -402,7 +403,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     const requested = typeof body.model === "string" ? body.model.trim() : "";
     const isAuto = requested === "auto" || requested === "free" || requested === "default" || /\/auto$/.test(requested);
     if (!isAuto) {
-      return errorResponse(404, `Free Switch 只提供 ${PROVIDER}/auto，收到 ${requested || "(空)"}`);
+      return errorResponse(404, `AutoSwitch 只提供 ${PROVIDER}/auto，收到 ${requested || "(空)"}`);
     }
     const session =
       request.headers.get("x-magpie-session") ||
@@ -456,13 +457,14 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       forcedDisabled = !!forced && !!(state.models[forced.id]?.disabled || (Array.isArray(state.disabledProviders) && state.disabledProviders.some((p) => matchesModel(forced, p))));
       if (forced && !forcedDisabled) {
         state.models[forced.id] = { ...(state.models[forced.id] ?? {}), until: 0, reason: undefined, failures: 0, disabled: false, lastAttemptAt: Date.now() };
-        try {
-          saveState(state);
-        } catch {
-          /* a read-only config directory must not break a request */
-        }
       }
+      // 一次性：消费后立即落盘，避免重启后旧切换被重复应用。
       state.manualSwitch = null;
+      try {
+        saveState(state);
+      } catch {
+        /* a read-only config directory must not break a request */
+      }
     }
     const selection = selectCandidates(models, state.models, needs, config, Date.now(), state.disabledProviders);
     const strategy = STRATEGIES.has(config.strategy) ? config.strategy : "free";
@@ -748,6 +750,16 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     return { ok: true };
   }
 
+  function cancelManualSwitch() {
+    state.manualSwitch = null;
+    try {
+      saveState(state);
+    } catch {
+      /* a read-only config directory must not break a request */
+    }
+    return { ok: true };
+  }
+
   // 控制台设置自动切换策略与付费策略参数。策略只影响自动候选池；手动切换到
   // 付费模型始终可用。接受 { strategy, maxPaidTries, paidWindow, paidMinBalance }
   // （旧调用也可直接传 strategy 字符串）。
@@ -959,7 +971,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       const previous = cfg.provider[PROVIDER] ?? {};
       cfg.provider[PROVIDER] = {
         ...previous,
-        name: previous.name || "Free Switch",
+        name: previous.name || "AutoSwitch",
         npm: SDK,
         api: BASE,
         models: {
@@ -985,7 +997,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         {
           type: "api",
           keyless: true,
-          label: "启用 Free Switch（无需密钥）",
+          label: "启用 AutoSwitch（无需密钥）",
           placeholder: "public",
           async authorize() {
             return { type: "success", key: "public" };
@@ -995,7 +1007,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       async loader(getAuth) {
         const auth = await getAuth();
         if (!auth) return {};
-        if (auth.type !== "api") throw new Error("Free Switch 使用免密钥登录");
+        if (auth.type !== "api") throw new Error("AutoSwitch 使用免密钥登录");
         return {
           baseURL: BASE,
           apiKey: "public",
@@ -1026,7 +1038,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         const config = effectiveConfig();
         const count = cache.models.length;
         const consoleText = console.running ? ` · ${console.url}` : config.console ? " · 控制台启动中" : "";
-        return { plan: `Free Switch · ${count} 个免费模型${consoleText}`, windows: [] };
+        return { plan: `AutoSwitch · ${count} 个免费模型${consoleText}`, windows: [] };
       },
     },
     provider: {

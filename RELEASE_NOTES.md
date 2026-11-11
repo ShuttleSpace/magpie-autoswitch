@@ -2,6 +2,15 @@
 
 版本号与 `package.json` / `src/core.mjs` 的 `VERSION` 保持一致；控制台「⚙ 设置」里会显示当前版本。
 
+## 0.8.1 — 2026-11-11
+
+### 修复：429 / 5xx 被 Magpie 包成 200 + in-band SSE 错误帧时不再被当成成功
+
+- **根因**：Magpie 网关把上游 429/5xx 重包成 `HTTP 200` 的 `text/event-stream`，并在**同一个 SSE chunk** 里先发一个正常的 `data: {"choices":[...]}` delta、再发一个 `data: {"error": {...}}` 帧（消息里带 `(429: you can retry your request)`）。旧 `inspectStream` 只扫到第一帧正常就 `return { ok: true }`，于是这个「带错误的成功流」被原样透传给调用方（opencode），调用方把它当成 429 后只能自己退避重试、且插件不会切换到下一个候选模型。
+- **`inspectStream` 现在扫描前缀里的每一帧**：只要任意 `data:` 帧是 `{"error":...}` 或 `{"type":"error"}`（无论它排在有效帧之前还是之后），就判定为失败并触发 failover；只有扫完整段前缀、没有任何错误帧、且至少出现一帧有效数据时才判定成功。
+- **携带真实状态码**：从 in-band 错误帧的 message 里解析出被 Magpie 包进去的原始状态码（如 `(429: you can retry your request)` → `429`），failover 时按真实状态码记录 `lastStatus` 与冷却，而不是一律记成 `502`，限流冷却因此按 429 正确生效。
+- **新增回归测试**：200 流、首帧正常但后续/同 chunk 出现 `data: {"error":...}` 帧 → 必须切到下一个候选模型（不再透传 `you can retry your request`）；帧顺序无关；纯 `role` 帧开头的健康流仍然正常流式返回、不重试。
+
 ## 0.8.0 — 2026-11-11
 
 ### 排队切换列表（免费 + 付费通用）

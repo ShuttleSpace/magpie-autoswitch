@@ -188,36 +188,58 @@ function replayResponse(response, chunks, reader) {
   return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
+// magpie 把上游错误包成 HTTP 200 + in-band SSE 错误帧，帧里的 message 常带
+// `(429: you can retry your request)` 这种原始状态码。把它解析出来，重试/冷却
+// 才能按真实的限流来处理，而不是一律当成 502。
+function statusFromErrorMessage(text) {
+  const match = /\((\d{3})\s*:\s*you can retry your request\)/i.test(text) ? text.match(/\((\d{3})\s*:/) : text.match(/\b(\d{3})\b.*rate.?limit/i);
+  const code = match?.[1];
+  const n = code ? Number(code) : NaN;
+  return Number.isInteger(n) && n >= 400 && n < 600 ? n : undefined;
+}
+
 function inspectStream(text) {
   const trimmed = text.trimStart();
   if (!trimmed) return undefined;
   if (trimmed.startsWith("{")) {
     try {
       const value = JSON.parse(trimmed);
-      if (value?.error) return { ok: false, error: JSON.stringify(value.error).slice(0, 500) };
+      if (value?.error) return { ok: false, error: JSON.stringify(value.error).slice(0, 500), status: statusFromErrorMessage(JSON.stringify(value.error)) };
       return { ok: true };
     } catch {
       return undefined;
     }
   }
-  if (/^event:\s*error/m.test(trimmed)) return { ok: false, error: trimmed.slice(0, 500) };
+  if (/^event:\s*error/m.test(trimmed)) return { ok: false, error: trimmed.slice(0, 500), status: statusFromErrorMessage(trimmed) };
   const lines = trimmed.split(/\r?\n/);
+  let hasValid = false;
+  let lastError;
   for (const line of lines) {
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trim();
     if (!data) continue;
-    if (data === "[DONE]") return { ok: true };
+    if (data === "[DONE]") {
+      hasValid = true;
+      continue;
+    }
     try {
       const value = JSON.parse(data);
       if (value?.error || value?.type === "error") {
-        return { ok: false, error: JSON.stringify(value.error ?? value).slice(0, 500) };
+        // magpie 把上游 429/5xx 包成 HTTP 200 的 SSE 流，常在同一 chunk 里先发
+        // 正常帧再发 `data: {"error":...}`。必须扫描所有帧，不能看到第一帧正常
+        // 就当成功 —— 否则这个 in-band 错误会被当成成功透传给调用方，触发其重试。
+        const errText = JSON.stringify(value.error ?? value);
+        lastError = { ok: false, error: errText.slice(0, 500), status: statusFromErrorMessage(errText) };
+        continue;
       }
-      return { ok: true };
+      hasValid = true;
     } catch {
       // A data line split across chunks: keep reading.
       return undefined;
     }
   }
+  if (lastError) return lastError;
+  if (hasValid) return { ok: true };
   return undefined;
 }
 
@@ -704,9 +726,9 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
             trace.aborted = true;
             break;
           }
-          attempt.status = 502;
+          attempt.status = peek.status ?? 502;
           const cooldown = cooldownFor({
-            status: 502,
+            status: attempt.status,
             headers: response.headers,
             bodyText: peek.error,
             previousFailures: state.models[candidate.id]?.failures ?? 0,
@@ -716,9 +738,9 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
           if (cooldown) {
             attempt.reason = cooldown.reason;
             attempt.cooldownUntil = cooldown.until;
-            markCooldown(candidate, cooldown, 502, peek.error);
+            markCooldown(candidate, cooldown, attempt.status, peek.error);
           }
-          last = { status: 502, text: peek.error };
+          last = { status: attempt.status, text: peek.error };
           log(input, "warn", `${candidate.id}: stream error: ${peek.error}`);
           continue;
         }

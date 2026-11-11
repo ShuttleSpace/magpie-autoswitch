@@ -206,6 +206,127 @@ test("a streamed reply is peeked before any byte is handed to the caller", async
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// magpie 把上游 429/5xx 包成 HTTP 200 的 SSE 流：先发一个正常的 role chunk，
+// 再发一个 `data: {"error": ...}` 帧。插件若只看第一帧就会把失败当成成功，
+// 不切换模型，调用方（opencode）收到 429 后只能自己退避重试。
+const IN_BAND_429 =
+  'data: {"error":{"message":"WorkBuddy: 您的使用量已超出频率限制，将在 2026-11-11 11:10:47 UTC+8 重置 (429: you can retry your request)","type":"api_error"}}\n\n';
+const ROLE_CHUNK = 'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n';
+
+test("an in-band SSE error frame fails over instead of being reported as success", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  const gateway = await fakeGateway({
+    models: models(),
+    chat(req, res, body) {
+      if (body.model === "zen/a") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        // magpie 真实形态：同一个 chunk 里既有正常帧，也有错误帧。
+        res.write(ROLE_CHUNK + IN_BAND_429);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write('data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n');
+      res.write("data: [DONE]\n\n");
+      res.end();
+    },
+  });
+  process.env.MAGPIE_ADDR = gateway.url;
+  const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+  const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+  const response = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "auto", stream: true, messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-free-switch-model"), "zen/b", "the in-band 429 must trigger failover");
+  const text = await response.text();
+  assert.match(text, /hello/);
+  assert.doesNotMatch(text, /you can retry your request/, "the caller must not receive the upstream error frame");
+  assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/a", "zen/b"]);
+  const state = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "state.json"), "utf8"));
+  assert.equal(state.models["zen/a"].lastStatus, 429, "the attempt is recorded as a rate limit, not a generic 502");
+  assert.ok(state.models["zen/a"].until > Date.now(), "the rate-limited model is cooling");
+  await hooks.lifecycle.dispose();
+  await gateway.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// 顺序无关：即便错误帧排在有效帧之前（同一 chunk 内），也要识别出来。
+test("an in-band error frame is detected regardless of frame order", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  const gateway = await fakeGateway({
+    models: models(),
+    chat(req, res, body) {
+      if (body.model === "zen/a") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        // 错误帧在前、有效帧在后，仍要识别为失败。
+        res.write(IN_BAND_429 + ROLE_CHUNK);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write('data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n');
+      res.write("data: [DONE]\n\n");
+      res.end();
+    },
+  });
+  process.env.MAGPIE_ADDR = gateway.url;
+  const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+  const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+  const response = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "auto", stream: true, messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-free-switch-model"), "zen/b", "the in-band 429 must trigger failover");
+  const text = await response.text();
+  assert.match(text, /hello/);
+  assert.doesNotMatch(text, /you can retry your request/);
+  assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/a", "zen/b"]);
+  const state = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "state.json"), "utf8"));
+  assert.equal(state.models["zen/a"].lastStatus, 429, "the attempt is recorded as a rate limit, not a generic 502");
+  assert.ok(state.models["zen/a"].until > Date.now(), "the rate-limited model is cooling");
+  await hooks.lifecycle.dispose();
+  await gateway.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a healthy stream that starts with a role-only chunk is still streamed", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  const gateway = await fakeGateway({
+    models: models(),
+    chat(req, res, body) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(ROLE_CHUNK);
+      res.write('data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n');
+      res.write("data: [DONE]\n\n");
+      res.end();
+    },
+  });
+  process.env.MAGPIE_ADDR = gateway.url;
+  const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+  const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+  const response = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "auto", stream: true, messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(gateway.calls.length, 1, "a healthy stream must not be retried");
+  const text = await response.text();
+  assert.match(text, /hello/);
+  assert.match(text, /\[DONE\]/);
+  await hooks.lifecycle.dispose();
+  await gateway.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test("a caller-shaped 400 is passed through instead of burning every free model", async () => {
   const dir = tmpdir();
   process.env.MAGPIE_CONFIG_DIR = dir;

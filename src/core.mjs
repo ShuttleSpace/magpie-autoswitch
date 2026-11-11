@@ -19,7 +19,7 @@ export function parseBalance(value) {
 }
 
 // Bump alongside RELEASE_NOTES.md when shipping a change.
-export const VERSION = "0.8.0";
+export const VERSION = "0.8.1";
 
 // Auto-switch strategy: how paid models participate in the failover pool.
 // "free"        — paid models are never tried automatically (default).

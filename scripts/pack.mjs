@@ -58,7 +58,7 @@ fs.writeFileSync(
 
 // 生成 tar.gz（macOS / Linux 自带 tar；Windows 用户可用目录形式安装）
 try {
-  execFileSync("tar", ["-czf", TGZ, "-C", OUT_DIR, "magpie-free-switch"], {
+  execFileSync("tar", ["-czf", TGZ, "-C", OUT_DIR, path.basename(BUNDLE)], {
     stdio: "inherit",
   });
 } catch (err) {
@@ -81,4 +81,4 @@ console.log(`[pack] 目录包 -> ${path.relative(root, BUNDLE)}  (${kb(dirSize(B
 if (fs.existsSync(TGZ)) {
   console.log(`[pack] 压缩包 -> ${path.relative(root, TGZ)}  (${kb(fs.statSync(TGZ).size)})`);
 }
-console.log("[pack] 完成。安装：magpie plugin add ./dist/magpie-free-switch");
+console.log(`[pack] 完成。安装：magpie plugin add ./dist/${path.basename(BUNDLE)}`);

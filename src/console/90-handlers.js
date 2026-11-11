@@ -23,11 +23,36 @@
     if (sw) {
       ev.stopPropagation();
       var swModel = sw.getAttribute("data-switch");
-      var swPaidRow = t.closest(".model-row.paid");
-      if (swPaidRow) {
-        if (!window.confirm("手动切换到付费模型 " + swModel + "：下次请求将强制使用该模型，可能产生实际费用。确定继续？")) return;
-      }
       action("/api/switch", { model: swModel }, "已设置：下一次请求强制使用 " + swModel, "ok");
+      return;
+    }
+    // ---- 排队切换列表 ----
+    // 用事件委托而不是直接绑定：控制台每 2 秒重绘一次，直接绑定的按钮会被
+    // 重绘卸载，事件委托则在容器上监听，始终有效。
+    var queueAdd = t.closest("[data-queue-add]");
+    if (queueAdd) {
+      ev.stopPropagation();
+      var qaModel = queueAdd.getAttribute("data-queue-add");
+      action("/api/queue/add", { model: qaModel }, "已加入队列：" + qaModel, "ok");
+      return;
+    }
+    var queueRemove = t.closest("[data-queue-remove]");
+    if (queueRemove) {
+      ev.stopPropagation();
+      var qrModel = queueRemove.getAttribute("data-queue-remove");
+      action("/api/queue/remove", { model: qrModel }, "已从队列移除：" + qrModel, "ok");
+      return;
+    }
+    var queueUp = t.closest("[data-queue-up]");
+    if (queueUp) {
+      ev.stopPropagation();
+      action("/api/queue/move", { model: queueUp.getAttribute("data-queue-up"), direction: "up" }, "已上移", "ok");
+      return;
+    }
+    var queueDown = t.closest("[data-queue-down]");
+    if (queueDown) {
+      ev.stopPropagation();
+      action("/api/queue/move", { model: queueDown.getAttribute("data-queue-down"), direction: "down" }, "已下移", "ok");
       return;
     }
     var cancelPending = t.closest("#pending-cancel");

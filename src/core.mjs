@@ -5,8 +5,21 @@
 export const PROVIDER = "free-switch";
 export const SELF_PROVIDERS = new Set([PROVIDER, `${PROVIDER}-plugin`]);
 
+// magpie 的余额字段是带符号/单位的字符串（"$0.0072"、"400 credits"、"0 credits"），
+// 不是纯数字。直接 Number() 会得到 NaN，余额下限（paidMinBalance）就永远不会
+// 触发。这里把字符串里的第一个数字取出来当余额；取不到就返回 undefined
+// （= 没有余额信息，按“未知余额”放行，和 paidCandidates 的口径一致）。
+export function parseBalance(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  const match = value.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const n = Number(match[0]);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 // Bump alongside RELEASE_NOTES.md when shipping a change.
-export const VERSION = "0.7.0";
+export const VERSION = "0.8.0";
 
 // Auto-switch strategy: how paid models participate in the failover pool.
 // "free"        — paid models are never tried automatically (default).
@@ -47,6 +60,10 @@ export const DEFAULT_CONFIG = {
   freeProviders: [],
   // 优先级（偏好模型）：检查后，优先使用这些模型，尽管它们在优先级数组中靠后。
   preferredModels: [],
+  // 排队切换列表：免费 + 付费模型 id 的有序数组。命中的模型按这里的顺序优先
+  // 尝试；切换策略改变时会按策略重排，用户也可在控制台手动微调。持久化在
+  // config.json，重启后保留。
+  switchQueue: [],
   // 自动切换策略："free"（只用免费）、"paid-first"（先付费后免费）、
   // "free-first"（先免费后付费）。付费模型仅在用户显式开启时才会被自动尝试，
   // 手动切换到付费模型始终可用且始终计费。
@@ -415,8 +432,8 @@ export function paidCandidates(catalog, stateModels, needs, config = DEFAULT_CON
   const balanceByProvider = new Map();
   if (minBalance) {
     for (const c of Array.isArray(credits) ? credits : []) {
-      const balance = Number(c?.balance);
-      if (c?.provider && Number.isFinite(balance)) balanceByProvider.set(c.provider, balance);
+      const balance = parseBalance(c?.balance);
+      if (c?.provider && balance !== undefined) balanceByProvider.set(c.provider, balance);
     }
   }
   const isDisabled = (m) => {
@@ -463,6 +480,9 @@ export function selectCandidates(models, stateModels, needs, config = DEFAULT_CO
   else ordered = cooling;
   return {
     ordered: ordered.slice(0, max),
+    // 未截断的完整顺序。排队切换列表必须在自己的候选合并进来之后再按
+    // maxTries 截断，否则队首模型会被这里的初始切片直接丢掉。
+    orderedAll: ordered,
     awake: awake.length,
     cooling: cooling.length,
     capable: capable.length,
@@ -815,6 +835,52 @@ export function reorderByExpiry(ordered, expiry) {
     .sort((a, b) => (a.k - b.k) || (a.i - b.i))
     .map((e) => e.model);
   return [...byExpiry(free), ...byExpiry(paid)];
+}
+
+// 按当前切换策略重排「排队切换列表」。
+//
+// - "paid-first"：付费模型在前、免费在后；
+// - "free-first" / "free"：免费模型在前、付费在后；
+// - "expiry-first"：免费段在前（与 reorderByExpiry 同口径），段内按积分/配额
+//   到期时间从近到远排序，没有到期信息的沉到该段末尾。
+//
+// 队列里的 id 可能已经不在目录中（例如供应商下线）。这类 id 视为免费（无从
+// 判断是否付费），但绝不能丢——用户手动维护的顺序要完整保留下来。
+export function reorderQueue(queue, catalog, strategy = "free", expiry = []) {
+  const seen = new Set();
+  const ids = [];
+  for (const raw of Array.isArray(queue) ? queue : []) {
+    if (typeof raw !== "string") continue;
+    const id = raw.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  if (!ids.length) return [];
+  const paidIds = new Set();
+  const providerById = new Map();
+  for (const m of Array.isArray(catalog) ? catalog : []) {
+    if (!m || typeof m.id !== "string") continue;
+    providerById.set(m.id, m.provider);
+    if (m.free === false) paidIds.add(m.id);
+  }
+  const free = [];
+  const paid = [];
+  for (const id of ids) (paidIds.has(id) ? paid : free).push(id);
+  if (strategy === "paid-first") return [...paid, ...free];
+  if (strategy === "expiry-first") {
+    const map = expiry instanceof Map ? expiry : expiryMap(expiry);
+    const key = (id) => {
+      const at = map.get(providerById.get(id));
+      return Number.isFinite(at) && at > 0 ? at : Infinity;
+    };
+    const byExpiry = (list) => list
+      .map((id, i) => ({ id, i, k: key(id) }))
+      .sort((a, b) => (a.k - b.k) || (a.i - b.i))
+      .map((e) => e.id);
+    return [...byExpiry(free), ...byExpiry(paid)];
+  }
+  return [...free, ...paid];
 }
 
 // ---- 统计图表数据（纯函数）----

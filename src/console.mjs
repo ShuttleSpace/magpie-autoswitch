@@ -11,12 +11,14 @@ const TEMPLATE = fs.readFileSync(new URL("./console.html", import.meta.url), "ut
 const CSS_PARTS = [
   "01-base.css", "02-stats.css", "03-components.css", "04-dialogs.css",
   "05-responsive.css", "06-panes.css", "07-prov-dialog.css", "08-charts.css",
+  "09-queue.css",
 ];
 const JS_PARTS = [
   "10-state.js", "20-utils.js", "30-render-model.js", "40-render-provider.js",
   "45-model-tree.js", "50-dom.js", "60-render-upstream.js", "65-charts.js",
   "70-render.js", "75-banner.js", "80-api.js", "90-handlers.js",
-  "91-controls.js", "92-dialogs.js", "93-splitter.js", "95-boot.js",
+  "91-controls.js", "92-render-queue.js", "92-dialogs.js",
+  "93-splitter.js", "95-boot.js",
 ];
 
 function assemble() {
@@ -82,7 +84,7 @@ async function readBody(req, max = 4096) {
 // A tiny loopback-only console. It is read-only except for refreshing the
 // catalog and clearing a cooldown, so it needs no token; it never listens on
 // anything but 127.0.0.1.
-export function createConsole({ getState, refresh, clearCooldown, disable, enable, switch: setManualSwitch, cancelSwitch, setStrategy, setConfig, refreshUpstream }) {
+export function createConsole({ getState, refresh, clearCooldown, disable, enable, switch: setManualSwitch, cancelSwitch, setStrategy, setConfig, refreshUpstream, queue }) {
   let server;
   let port = 0;
   let requestedPort = 0;
@@ -160,6 +162,27 @@ export function createConsole({ getState, refresh, clearCooldown, disable, enabl
         const result = await setConfig?.(body);
         const state = await getState();
         return json(res, 200, { ...state, ok: result?.ok !== false, error: result?.error, changed: result?.changed });
+      }
+      if (req.method === "POST" && url.pathname.startsWith("/api/queue/")) {
+        const action = url.pathname.slice("/api/queue/".length);
+        if (!["add", "remove", "move", "run", "clear"].includes(action)) {
+          return json(res, 404, { error: "not found" });
+        }
+        const body = await readBody(req);
+        if (typeof queue !== "function") {
+          return json(res, 500, { ok: false, error: "the queue handler is not wired" });
+        }
+        const result = await queue(action, body);
+        const state = await getState();
+        // switchQueue 以服务端为准；run 额外回传 manualSwitch，让控制台立刻
+        // 显示「下一次请求强制使用 XXX」。
+        return json(res, 200, {
+          ...state,
+          switchQueue: Array.isArray(result?.switchQueue) ? result.switchQueue : (state.switchQueue ?? []),
+          manualSwitch: result?.manualSwitch ?? state.manualSwitch ?? null,
+          ok: result?.ok !== false,
+          error: result?.error,
+        });
       }
       if (req.method === "POST" && url.pathname === "/api/providers") {
         const body = await readBody(req);

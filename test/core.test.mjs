@@ -27,6 +27,8 @@ import {
   supports,
   expiryMap,
   reorderByExpiry,
+  reorderQueue,
+  parseBalance,
   STRATEGIES,
 } from "../src/core.mjs";
 
@@ -566,3 +568,76 @@ test("reorderByExpiry is a no-op without expiry data", () => {
   assert.deepEqual(reorderByExpiry(ordered, expiryMap([])).map((m) => m.id), ["1", "2"]);
   assert.deepEqual(reorderByExpiry([], expiryMap([])), []);
 });
+
+test("reorderQueue puts paid models first under paid-first and keeps every id", () => {
+  const catalog = [
+    { id: "free/a", provider: "zen", free: true },
+    { id: "paid/b", provider: "paid", free: false },
+    { id: "free/c", provider: "kilo", free: true },
+    { id: "paid/d", provider: "paid", free: false },
+  ];
+  const out = reorderQueue(["free/a", "paid/b", "free/c", "paid/d"], catalog, "paid-first");
+  assert.deepEqual(out, ["paid/b", "paid/d", "free/a", "free/c"]);
+});
+
+test("reorderQueue puts free models first under free-first and under the free strategy", () => {
+  const catalog = [
+    { id: "free/a", provider: "zen", free: true },
+    { id: "paid/b", provider: "paid", free: false },
+  ];
+  assert.deepEqual(reorderQueue(["paid/b", "free/a"], catalog, "free-first"), ["free/a", "paid/b"]);
+  assert.deepEqual(reorderQueue(["paid/b", "free/a"], catalog, "free"), ["free/a", "paid/b"]);
+});
+
+test("reorderQueue sorts by soonest expiry under expiry-first, keeping free before paid", () => {
+  const catalog = [
+    { id: "free/late", provider: "late", free: true },
+    { id: "free/soon", provider: "soon", free: true },
+    { id: "paid/soon", provider: "soon", free: false },
+    { id: "free/none", provider: "none", free: true },
+  ];
+  const expiry = expiryMap([
+    { provider: "soon", resetAt: 1000 },
+    { provider: "late", resetAt: 9000 },
+  ]);
+  const out = reorderQueue(["free/late", "paid/soon", "free/soon", "free/none"], catalog, "expiry-first", expiry);
+  assert.deepEqual(out, ["free/soon", "free/late", "free/none", "paid/soon"]);
+});
+
+test("reorderQueue keeps unknown ids in place instead of dropping them", () => {
+  const catalog = [{ id: "free/a", provider: "zen", free: true }];
+  const out = reorderQueue(["free/a", "gone/x", "paid/y"], catalog, "paid-first");
+  assert.deepEqual(out.length, 3, "no queue entry is lost when the catalog does not know it");
+  assert.ok(out.includes("gone/x"));
+  assert.ok(out.includes("paid/y"));
+});
+
+test("reorderQueue drops duplicates and keeps the first occurrence", () => {
+  const catalog = [{ id: "free/a", provider: "zen", free: true }];
+  assert.deepEqual(reorderQueue(["free/a", "free/a", "free/a"], catalog, "free"), ["free/a"]);
+});
+
+test("parseBalance reads the currency/credit strings magpie actually stores", () => {
+  // 真实数据里 balance 是 "$0.0072" / "400 credits" / "0 credits"，不是纯数字。
+  assert.equal(parseBalance("$0.0072"), 0.0072);
+  assert.equal(parseBalance("400 credits"), 400);
+  assert.equal(parseBalance("0 credits"), 0);
+  assert.equal(parseBalance("1,234.5 credits"), 1234.5);
+  assert.equal(parseBalance(12.5), 12.5);
+  assert.equal(parseBalance("$0.00"), 0);
+  // 取不到数字 = 没有余额信息（按未知余额放行），不是 0。
+  assert.equal(parseBalance("unknown"), undefined);
+  assert.equal(parseBalance(undefined), undefined);
+  assert.equal(parseBalance(null), undefined);
+});
+
+test("paidCandidates honours a balance floor for currency-string balances", () => {
+  const catalog = [{ id: "paid/a", provider: "p", free: false }];
+  const credits = [{ provider: "p", balance: "$0.01" }];
+  const config = { ...DEFAULT_CONFIG, paidMinBalance: 1, includeProviders: [], excludeProviders: [], excludeModels: [] };
+  // 余额 0.01 美元 < 下限 1 → 该付费模型被跳过。
+  assert.deepEqual(paidCandidates(catalog, {}, {}, config, Date.now(), [], credits), []);
+  const ok = paidCandidates(catalog, {}, {}, { ...config, paidMinBalance: 0.001 }, Date.now(), [], credits);
+  assert.deepEqual(ok.map((m) => m.id), ["paid/a"]);
+});
+

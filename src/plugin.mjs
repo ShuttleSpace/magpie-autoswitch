@@ -16,6 +16,9 @@ import {
   STRATEGIES,
   STRATEGY_LABELS,
   reorderByExpiry,
+  reorderQueue,
+  cooldownActive,
+  parseBalance,
   formatPaidWindow,
   parsePaidWindow,
   withinPaidWindow,
@@ -23,6 +26,7 @@ import {
   needsOf,
   selectCandidates,
   shouldStop,
+  supports,
 } from "./core.mjs";
 import { appendTrace, configPath, loadConfig, loadState, readAllProviders, readCredits, readTraces, saveState, writeJSON, STATE_MAX_AGE } from "./config.mjs";
 import { fetchModelRows, fetchUsageRows, fetchConcurrency, fetchQuotas, gatewayAddress, postChat, readLimited } from "./gateway.mjs";
@@ -326,6 +330,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     setStrategy: (strategy) => setStrategy(strategy),
     setConfig: (config) => setConfig(config),
     refreshUpstream: () => refreshUpstream(true),
+    queue: (action, body) => queueAction(action, body),
   });
 
   function effectiveConfig() {
@@ -567,29 +572,34 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     // 上游雷达：只把观察到近期 429/5xx 的模型排到末尾，不删除候选。
     // 数据来自后台缓存，拿不到时 summary 为空 → demoteUpstream 原样返回。
     const upstream = upstreamView(config);
-    let ordered = demoteUpstream(selection.ordered, upstream.summary, Date.now());
     const max = Math.max(1, Math.min(20, Math.trunc(Number(config.maxTries) || 6)));
+    // 基础候选（免费池，未截断）。排队切换列表的候选必须在截断前合并进来，
+    // 否则队首模型会被 maxTries 的初始切片直接丢掉。
+    let rest = demoteUpstream(selection.orderedAll, upstream.summary, Date.now());
+    // 队列命中的模型优先尝试，其余候选保持原策略顺序。
+    const queued = queueCandidates(config, models, catalog, Date.now(), needs);
+    const queuedIds = new Set(queued.map((m) => m.id));
+    rest = rest.filter((m) => !queuedIds.has(m.id));
     if (strategy === "paid-first" || strategy === "free-first" || strategy === "expiry-first") {
-      // 策略并入付费候选。付费候选受 maxPaidTries 严格限制；合并后整体按
-      // maxTries 切片，保证单次请求总尝试数有上限，避免失控计费。
       const paid = demoteUpstream(paidCandidates(catalog, state.models, needs, config, Date.now(), state.disabledProviders, readCredits()), upstream.summary, Date.now())
-        .filter((m) => !forced || m.id !== forced.id)
+        .filter((m) => (!forced || m.id !== forced.id) && !queuedIds.has(m.id))
         .slice(0, Math.max(0, Math.trunc(Number(config.maxPaidTries) || 0)));
       // paid-first 以付费在前、免费在后；free-first / expiry-first 反之。
-      ordered = strategy === "paid-first" ? [...paid, ...ordered] : [...ordered, ...paid];
-      ordered = ordered.slice(0, max);
+      rest = strategy === "paid-first" ? [...paid, ...rest] : [...rest, ...paid];
       if (strategy === "expiry-first") {
         // 免费优先的基础上，段内按「积分/配额即将到期」重排：到期越近越先用，
-        // 无到期信息的型号沉到该段末尾。
-        ordered = reorderByExpiry(ordered, readCredits());
+        // 无到期信息的型号沉到该段末尾。只重排非队列部分，队列保持用户排定的顺序。
+        rest = reorderByExpiry(rest, readCredits());
       }
     }
+    let ordered = [...queued, ...rest].slice(0, max);
     if (forced && !forcedDisabled) {
       ordered = [forced, ...ordered.filter((m) => m.id !== forced.id)];
     }
     // 付费策略模式下候选来自 paidCandidates（已按能力过滤或放宽），直接用 ordered
-    // 判断是否有可用候选，避免只看免费池的 capability 计数。
-    const capabilityOk = strategy === "free" ? selection.capable > 0 : ordered.some((m) => supports(m, needs));
+    // 判断是否有可用候选，避免只看免费池的 capability 计数。队列里的模型也
+    // 可能独力满足能力要求，所以同样计入。
+    const capabilityOk = ordered.some((m) => supports(m, needs)) || (strategy === "free" && selection.capable > 0);
     if (!ordered.length || ((needs.tools || needs.images || needs.reasoning) && !capabilityOk)) {
       trace.exhausted = true;
       trace.error = "no candidate for request capabilities";
@@ -876,6 +886,125 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     return { ok: true };
   }
 
+  // ---- 排队切换列表 ----
+  //
+  // 一个有序的模型 id 数组（免费 + 付费都支持），持久化在 config.json 的
+  // switchQueue 里，重启后仍在。服务端是唯一权威：控制台只提交动作，队列
+  // 本身每次都从 config.json 读，避免内存与磁盘不一致。
+  function queueIds(config = loadConfig()) {
+    return Array.isArray(config.switchQueue) ? [...config.switchQueue] : [];
+  }
+
+  // 排队切换列表里的模型在自动调度时优先尝试。
+  //
+  // - 免费模型：和普通候选一样受禁用 / 冷却约束。
+  // - 付费模型：「完全免费」策略下不参与自动切换（只能手动执行队列切换），
+  //   其余策略下还要过付费窗口与余额下限这两道闸门。
+  // - 能力要求（工具 / 图片 / 推理）：队列里若存在满足要求的模型，只用满足
+  //   要求的那些；否则退回全部（和 selectCandidates 的口径一致）。
+  function queueCandidates(config, freeModels, catalog, now, needs = {}) {
+    const ids = queueIds(config);
+    if (!ids.length) return [];
+    const strategy = STRATEGIES.has(config.strategy) ? config.strategy : "free";
+    const freeById = new Map((Array.isArray(freeModels) ? freeModels : []).map((m) => [m.id, m]));
+    const catalogById = new Map((Array.isArray(catalog) ? catalog : []).map((m) => [m.id, m]));
+    const credits = readCredits();
+    const balanceByProvider = new Map();
+    const minBalance = Number(config.paidMinBalance) > 0 ? Number(config.paidMinBalance) : 0;
+    if (minBalance) {
+      for (const c of credits) {
+        const b = parseBalance(c?.balance);
+        if (c?.provider && b !== undefined) balanceByProvider.set(c.provider, b);
+      }
+    }
+    const windowActive = withinPaidWindow(config.paidWindow, now);
+    const out = [];
+    const seen = new Set();
+    for (const id of ids) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const model = freeById.get(id) ?? catalogById.get(id);
+      if (!model) continue;
+      const isPaid = model.free === false;
+      if (isPaid) {
+        // 完全免费策略：付费模型不自动使用，只能手动执行队列切换。
+        if (strategy === "free") continue;
+        if (!windowActive) continue;
+        const balance = balanceByProvider.get(model.provider);
+        if (minBalance && balance !== undefined && balance < minBalance) continue;
+      }
+      if (state.models[model.id]?.disabled) continue;
+      if (Array.isArray(state.disabledProviders) && state.disabledProviders.some((p) => matchesModel(model, p))) continue;
+      if (cooldownActive(state.models[model.id], now) && config.tryCooling === false) continue;
+      out.push(model);
+    }
+    const capable = out.filter((m) => supports(m, needs));
+    return capable.length ? capable : out;
+  }
+
+  // 按当前策略重排队列。策略变化时服务端自动重排，用户随后仍可手动微调。
+  // 目录里已不存在的 id 不会丢：reorderQueue 把它们当作免费段保留。
+  function reorderQueueForStrategy(config) {
+    const queue = queueIds(config);
+    if (!queue.length) return queue;
+    const strategy = STRATEGIES.has(config.strategy) ? config.strategy : "free";
+    return reorderQueue(queue, cache.catalog ?? [], strategy, readCredits());
+  }
+
+  // 队列写操作：加入 / 移除 / 上移下移 / 清空 / 执行。每次变更立刻落盘。
+  function queueAction(action, body = {}) {
+    const config = loadConfig();
+    const queue = queueIds(config);
+    const model = typeof body?.model === "string" ? body.model.trim() : "";
+    const save = (next) => {
+      config.switchQueue = next;
+      try {
+        writeJSON(configPath(), config);
+      } catch (error) {
+        return { ok: false, error: String(error?.message ?? error), switchQueue: next };
+      }
+      return { ok: true, switchQueue: next };
+    };
+    switch (action) {
+      case "add": {
+        if (!model) return { ok: false, error: "missing model", switchQueue: queue };
+        if (queue.includes(model)) return { ok: true, switchQueue: queue };
+        return save([...queue, model]);
+      }
+      case "remove": {
+        if (!model) return { ok: false, error: "missing model", switchQueue: queue };
+        return save(queue.filter((id) => id !== model));
+      }
+      case "move": {
+        if (!model) return { ok: false, error: "missing model", switchQueue: queue };
+        const index = queue.indexOf(model);
+        if (index < 0) return { ok: false, error: "model is not in the queue", switchQueue: queue };
+        const direction = body?.direction === "down" ? "down" : "up";
+        const target = direction === "up" ? index - 1 : index + 1;
+        if (target < 0 || target >= queue.length) return { ok: true, switchQueue: queue };
+        const next = [...queue];
+        next.splice(index, 1);
+        next.splice(target, 0, model);
+        return save(next);
+      }
+      case "clear":
+        return save([]);
+      case "run": {
+        // 执行队列切换 = 消费队首：下一次请求强制使用队首模型，并把它移出队列。
+        if (!queue.length) return { ok: false, error: "the queue is empty", switchQueue: queue };
+        const head = queue[0];
+        const saved = save(queue.slice(1));
+        if (!saved.ok) return saved;
+        // 与手动切换付费模型一致：显式的用户操作始终可用，不受策略限制。
+        const switched = setManualSwitch(head);
+        if (switched.ok === false) return { ok: false, error: switched.error, switchQueue: queue.slice(1) };
+        return { ok: true, switchQueue: queue.slice(1), manualSwitch: state.manualSwitch ?? null };
+      }
+      default:
+        return { ok: false, error: `unknown queue action: ${action}`, switchQueue: queue };
+    }
+  }
+
   // 控制台设置自动切换策略与付费策略参数。策略只影响自动候选池；手动切换到
   // 付费模型始终可用。接受 { strategy, maxPaidTries, paidWindow, paidMinBalance }
   // （旧调用也可直接传 strategy 字符串）。
@@ -910,7 +1039,22 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };
     }
+    // 策略变了 → 队列按新策略重排并一起落盘，用户随后仍可手动微调。
+    applyStrategyToQueue(config);
     return { ok: true };
+  }
+
+  // 策略变化后重排队列并持久化。免费/付费分段在策略之间保持不变（免费段
+  // 永远在前，除非策略是 paid-first），段内顺序按策略重算。
+  function applyStrategyToQueue(config) {
+    const next = reorderQueueForStrategy(config);
+    if (next.length === queueIds(config).length && next.every((id, i) => id === queueIds(config)[i])) return;
+    config.switchQueue = next;
+    try {
+      writeJSON(configPath(), config);
+    } catch {
+      /* a read-only config directory must not break the settings update */
+    }
   }
 
   // 控制台「设置」面板可手动配置的参数白名单：核心调度参数 + 付费/策略参数。
@@ -965,6 +1109,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     } catch (error) {
       return { ok: false, error: String(error?.message ?? error) };
     }
+    // 策略变了 → 队列按新策略重排并一起落盘（与 setStrategy 同一条路径）。
+    if (changed.includes("strategy")) applyStrategyToQueue(config);
     return { ok: true, changed };
   }
 
@@ -1019,8 +1165,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     const balanceByProvider = new Map();
     if (paidMinBalance) {
       for (const c of credits) {
-        const b = Number(c?.balance);
-        if (c?.provider && Number.isFinite(b)) balanceByProvider.set(c.provider, b);
+        const b = parseBalance(c?.balance);
+        if (c?.provider && b !== undefined) balanceByProvider.set(c.provider, b);
       }
     }
     // 付费模型为何不参与自动切换：窗口外 / 余额低于下限。null 表示可自动使用。
@@ -1066,6 +1212,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       upstream: upstreamView(config),
       disabledProviders: Array.isArray(state.disabledProviders) ? [...state.disabledProviders] : [],
       manualSwitch: state.manualSwitch ?? null,
+      // 排队切换列表：服务端是唯一权威，控制台只读这里的状态。
+      switchQueue: queueIds(config),
       allProviders: (() => {
         try { return readAllProviders(); } catch { return []; }
       })(),
@@ -1243,6 +1391,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     },
     // 供控制台 /api/config 调用的同一份落盘逻辑，暴露出来便于测试与复用。
     setConfig: (config) => setConfig(config),
+    // 控制台句柄：暴露出来便于测试直接打 API（.url / .start(0)）。
+    console,
   };
 }
 

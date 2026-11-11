@@ -144,4 +144,7 @@
     var pendingModel = state.manualSwitch && state.manualSwitch.model ? state.manualSwitch.model : "";
     hidden("pending-bar", !pendingModel);
     if (pendingModel) txt("pending-model", pendingModel);
+
+    // 排队切换列表（服务端是唯一权威，这里只读状态）
+    renderQueue();
   }

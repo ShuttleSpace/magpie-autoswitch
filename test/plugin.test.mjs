@@ -286,6 +286,71 @@ test("the console serves the page and its state on loopback", async () => {
   assert.equal(consoleServer.running, false);
 });
 
+test("the console queue API adds, removes, moves and runs queued models", async () => {
+  const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    const configFile = path.join(dir, "free-switch", "config.json");
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    // console: true 让插件自己的 syncConsole 保持这个控制台存活（否则它会
+    // 在 config.console 为 false 时把控制台关掉，测试里的 fetch 就连不上）。
+    fs.writeFileSync(configFile, JSON.stringify({ switchQueue: [], console: true, consolePort: 0 }));
+    const api = await createFreeSwitchPlugin({ magpie: { option: () => undefined } });
+    const post = async (path, body) => {
+      const res = await fetch(`${api.console.url}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      return { status: res.status, body: await res.json() };
+    };
+    await api.console.start(0);
+
+    let r = await post("/api/queue/add", { model: "zen/a" });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.switchQueue, ["zen/a"]);
+
+    r = await post("/api/queue/add", { model: "paid/c" });
+    assert.deepEqual(r.body.switchQueue, ["zen/a", "paid/c"]);
+
+    r = await post("/api/queue/add", { model: "zen/a" });
+    assert.deepEqual(r.body.switchQueue, ["zen/a", "paid/c"], "adding twice does not duplicate the entry");
+
+    r = await post("/api/queue/add", { model: "" });
+    assert.equal(r.body.ok, false, "an empty model is rejected");
+    assert.deepEqual(r.body.switchQueue, ["zen/a", "paid/c"]);
+
+    r = await post("/api/queue/move", { model: "paid/c", direction: "up" });
+    assert.deepEqual(r.body.switchQueue, ["paid/c", "zen/a"], "move up puts the model first");
+
+    r = await post("/api/queue/move", { model: "paid/c", direction: "down" });
+    assert.deepEqual(r.body.switchQueue, ["zen/a", "paid/c"], "move down puts the model last");
+
+    r = await post("/api/queue/remove", { model: "zen/a" });
+    assert.deepEqual(r.body.switchQueue, ["paid/c"]);
+
+    const saved = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    assert.deepEqual(saved.switchQueue, ["paid/c"], "the queue is persisted to config.json");
+
+    r = await post("/api/queue/run", {});
+    assert.equal(r.body.ok, true);
+    assert.equal(r.body.manualSwitch?.model, "paid/c", "running the queue forces the head model");
+    assert.deepEqual(r.body.switchQueue, [], "running the queue consumes the head entry");
+
+    r = await post("/api/queue/add", { model: "zen/b" });
+    assert.deepEqual(r.body.switchQueue, ["zen/b"]);
+    r = await post("/api/queue/clear", {});
+    assert.deepEqual(r.body.switchQueue, []);
+
+    await api.lifecycle.dispose();
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the preferred API toggles a model in config.json", async () => {
   const dir = tmpdir();
   process.env.MAGPIE_CONFIG_DIR = dir;
@@ -329,6 +394,26 @@ test("the preferred API toggles a model in config.json", async () => {
     assert.equal(res.status, 400);
     await consoleServer.stop();
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig normalizes the switch queue into a clean list of model ids", async () => {
+  const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    const configFile = path.join(dir, "free-switch", "config.json");
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    fs.writeFileSync(configFile, JSON.stringify({ switchQueue: [" paid/b ", "free/a", 42, "", "   ", null, "free/a"] }));
+    const config = loadConfig();
+    assert.deepEqual(config.switchQueue, ["paid/b", "free/a"], "blank, non-string and duplicate ids are dropped");
+    // A queue that is not an array falls back to the default (empty) list.
+    fs.writeFileSync(configFile, JSON.stringify({ switchQueue: "paid/b" }));
+    assert.deepEqual(loadConfig().switchQueue, []);
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -464,10 +549,33 @@ test("readCredits reads magpie quota balances and credit usage", async () => {
     const codearts = credits.find((c) => c.provider === "codearts");
     assert.ok(codearts, "codearts should appear in the credit snapshot");
     assert.equal(codearts.balance, "$0.00");
+    // magpie 的 resetsAt 是 ISO 字符串，必须被归一化成毫秒时间戳，否则
+    // expiry-first 的队列重排（和控制台的到期倒计时）会静默失效。
+    assert.equal(codearts.resetAt, Date.parse("2026-11-23T16:00:00Z"));
     const trae = credits.find((c) => c.provider === "trae-cn");
     assert.ok(trae, "trae-cn should appear in the credit snapshot");
     assert.equal(trae.total, 1600);
     assert.equal(trae.used, 947.15);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readCredits falls back to runsOutAt and ignores windows without a reset time", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "quotas.json"), JSON.stringify({
+      "minimax-code/x": { quota: { provider: "minimax-code", name: "MiniMax Code", windows: [{ name: "Credits", used: 0, runsOutAt: "2026-12-05T16:00:00Z", limit: 400, unit: "credits" }] } },
+      "no-reset/y": { quota: { provider: "no-reset", name: "No Reset", windows: [{ name: "Credits", used: 0, limit: 400, unit: "credits" }] } },
+    }));
+    const { readCredits } = await import("../src/config.mjs");
+    const credits = readCredits();
+    const minimax = credits.find((c) => c.provider === "minimax-code");
+    assert.equal(minimax.resetAt, Date.parse("2026-12-05T16:00:00Z"), "runsOutAt is used when resetsAt is missing");
+    const none = credits.find((c) => c.provider === "no-reset");
+    assert.equal(none.resetAt, undefined, "a window without any reset time yields no expiry info");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -672,6 +780,141 @@ test("upstream health from magpie demotes a limited model and is exposed in stat
   assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/b"]);
   await hooks.lifecycle.dispose();
   await gateway.close();
+});
+
+test("the switch queue is tried before the regular candidates and survives a restart", async () => {
+  const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    // 队列把 zen/b 排到 zen/a 前面：下一次请求必须先试 zen/b。
+    fs.writeFileSync(path.join(dir, "free-switch", "config.json"), JSON.stringify({ switchQueue: ["zen/b"] }));
+    const gateway = await fakeGateway({
+      models: models(),
+      chat(req, res, body) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "chat-1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+      },
+    });
+    process.env.MAGPIE_ADDR = gateway.url;
+    const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+    const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+    const reply = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(reply.status, 200);
+    assert.equal(reply.headers.get("x-free-switch-model"), "zen/b", "the queued model is tried first");
+    assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/b"]);
+    await hooks.lifecycle.dispose();
+
+    // 重启后队列仍在（持久化在 config.json），行为不变。
+    gateway.calls.length = 0;
+    const restarted = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+    const restartedLoader = await restarted.auth.loader(async () => ({ type: "api", key: "public" }));
+    const afterRestart = await restartedLoader.fetch(`${restartedLoader.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(afterRestart.status, 200);
+    assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/b"], "the queue survives a plugin restart");
+    await restarted.lifecycle.dispose();
+    await gateway.close();
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a paid model in the queue is not auto-tried under the free-only strategy", async () => {
+  const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    // 策略 = 完全免费：队列里的付费模型不能被自动尝试。
+    fs.writeFileSync(path.join(dir, "free-switch", "config.json"), JSON.stringify({ strategy: "free", switchQueue: ["paid/c"] }));
+    const gateway = await fakeGateway({
+      models: models(),
+      chat(req, res, body) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "chat-1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+      },
+    });
+    process.env.MAGPIE_ADDR = gateway.url;
+    const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+    const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+    const reply = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(reply.status, 200);
+    assert.ok(!gateway.calls.some((x) => x.model === "paid/c"), "the queued paid model is never auto-tried under the free strategy");
+    assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/a"], "the free pool is used instead");
+    await hooks.lifecycle.dispose();
+    await gateway.close();
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("changing the strategy reorders the queue and persists the new order", async () => {
+  const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    const configFile = path.join(dir, "free-switch", "config.json");
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    fs.writeFileSync(configFile, JSON.stringify({ strategy: "free", switchQueue: ["paid/c", "zen/a"], console: true, consolePort: 0 }));
+    // 目录里 paid/c 是付费模型、zen/a 是免费模型。
+    const gateway = await fakeGateway({
+      models: models(),
+      chat(req, res) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+      },
+    });
+    process.env.MAGPIE_ADDR = gateway.url;
+    const api = await createFreeSwitchPlugin({ magpie: { option: () => undefined } });
+    await api.console.start(0);
+    // 让插件先发现一次目录，reorderQueue 才知道哪个是付费模型。
+    await fetch(`${api.console.url}/api/refresh`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+
+    const post = async (path, body) => {
+      const res = await fetch(`${api.console.url}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      return res.json();
+    };
+
+    // 完全免费 → 免费模型在前。
+    let body = await post("/api/strategy", { strategy: "free" });
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.switchQueue, ["zen/a", "paid/c"], "the free strategy puts free models first");
+
+    // 先付费后免费 → 付费模型在前。
+    body = await post("/api/strategy", { strategy: "paid-first" });
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.switchQueue, ["paid/c", "zen/a"], "paid-first puts paid models first");
+
+    const saved = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    assert.deepEqual(saved.switchQueue, ["paid/c", "zen/a"], "the reordered queue is persisted to config.json");
+    await api.lifecycle.dispose();
+    await gateway.close();
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("setConfig validates and persists the editable whitelist", async () => {

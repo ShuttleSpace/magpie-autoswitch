@@ -37,6 +37,18 @@ export function readAllProviders() {
     .filter((p) => p.id && !SELF_PROVIDERS.has(p.id));
 }
 
+// magpie 的 quotas.json 里 resetsAt 是 ISO 字符串（"2026-11-23T16:00:00Z"），
+// 而到期时间的消费者（expiryMap / 控制台倒计时）都按毫秒时间戳算。统一在这里
+// 归一化成毫秒，解析不了就返回 undefined（= 没有到期信息），避免 NaN 静默
+// 让「按到期时间排序」整条链路失效。
+function toEpochMs(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  if (Number.isFinite(n)) return n > 0 ? n : undefined;
+  const at = Date.parse(String(value));
+  return Number.isFinite(at) ? at : undefined;
+}
+
 export function readCredits() {
   const dir = magpieConfigDir();
   const quotas = readJSON(path.join(dir, "quotas.json"), {});
@@ -45,13 +57,13 @@ export function readCredits() {
   const add = (providerId, entry) => {
     if (!providerId) return;
     const prev = byId.get(providerId) ?? {};
-    // 该提供商所有配额窗口里最早的一次重置/到期时间（秒级时间戳），用于
+    // 该提供商所有配额窗口里最早的一次重置/到期时间（毫秒时间戳），用于
     // expiry-first 策略按「积分即将到期」优先调度。无到期信息时保持 undefined。
     let resetAt = prev.resetAt;
     const windows = Array.isArray(entry.windows) ? entry.windows : [];
     for (const w of windows) {
-      const at = Number(w?.resetsAt);
-      if (Number.isFinite(at) && at > 0 && (resetAt === undefined || at < resetAt)) resetAt = at;
+      const at = toEpochMs(w?.resetsAt ?? w?.runsOutAt);
+      if (at !== undefined && (resetAt === undefined || at < resetAt)) resetAt = at;
     }
     byId.set(providerId, {
       provider: entry.provider ?? providerId,
@@ -144,10 +156,12 @@ export function loadConfig() {
   const file = configPath();
   const saved = readJSON(file, undefined);
   const config = { ...DEFAULT_CONFIG, ...(saved && typeof saved === "object" ? saved : {}) };
-  for (const key of ["priority", "includeProviders", "excludeProviders", "includeModels", "excludeModels", "freeProviders", "preferredModels"]) {
+  for (const key of ["priority", "includeProviders", "excludeProviders", "includeModels", "excludeModels", "freeProviders", "preferredModels", "switchQueue"]) {
     if (!Array.isArray(config[key])) config[key] = [...DEFAULT_CONFIG[key]];
     config[key] = config[key].filter((x) => typeof x === "string" && x.trim()).map((x) => x.trim());
   }
+  // 排队切换列表是一个有序集合：同一个模型只能出现一次，保留首次出现的位置。
+  config.switchQueue = [...new Set(config.switchQueue)];
   for (const key of [
     "maxTries",
     "refreshSeconds",

@@ -125,6 +125,21 @@
     </div>
   </section>
 
+  <section class="card pane pane-queue" id="queue-panel">
+    <div class="panel-head">
+      <div class="panel-title"><strong>排队切换列表</strong> <span id="queue-count" class="dim"></span></div>
+      <div class="toolbar">
+        <span class="dim queue-hint">队列中的模型在自动切换时优先尝试；点「执行队列切换」会消耗队首，下一次请求强制使用它</span>
+        <button id="queue-run" class="ghost" type="button" title="消耗队首：下一次请求强制使用队首模型">执行队列切换</button>
+        <button id="queue-clear" class="ghost danger" type="button" title="清空队列">清空</button>
+      </div>
+    </div>
+    <div class="panel-body">
+      <div id="queue-list" class="queue-list"></div>
+      <div id="queue-empty" class="empty" hidden>队列为空。在模型行点「加入队列」把模型排进来（免费与付费模型都可以）。</div>
+    </div>
+  </section>
+
   <div class="grid2" id="grid2">
     <section class="card panel pane pane-providers">
       <div class="panel-head">

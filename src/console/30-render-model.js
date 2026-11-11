@@ -24,17 +24,22 @@
         ? '<span class="tag blocked" title="该供应商余额低于设定的下限，自动切换不会使用该模型">余额不足</span>'
         : "";
       var paidNote = !strategyOn
-        ? "不参与自动切换"
+        ? "策略不参与自动切换"
         : m.paidBlocked === "window"
         ? "不在付费时段"
         : m.paidBlocked === "balance"
         ? "余额低于下限"
         : "可自动使用（受策略限制）";
+      // 付费模型的「切换」改成「加入队列」：付费模型不直接被强制使用，
+      // 而是排进队列，由队列决定何时、按什么顺序切换过去。
+      var paidAction = '<button class="ghost" data-queue-add="' + esc(m.id) + '" type="button" title="' +
+        (strategyOn ? "加入排队切换列表，排在自动候选之前" : "加入排队切换列表；完全免费策略下只允许手动执行队列切换") +
+        '">加入队列</button>';
       return '<div class="model-row paid' + (m.disabled ? " disabled" : "") + '" data-model="' + esc(m.id) + '" title="付费模型：消耗该供应商的积分或余额；自动参与与否由切换策略决定">' +
         '<div class="mr-status"><span class="tag paid">付费</span>' + paidBlockedTag + "</div>" +
         '<div class="mr-model"><div class="id">' + esc(m.id) + "</div>" + paidName + "</div>" +
         '<div class="mr-fail" title="自动切换是否使用该模型">' + esc(paidNote) + "</div>" +
-        '<div class="mr-action"><button class="ghost" data-switch="' + esc(m.id) + '" type="button" title="手动下次请求强制切换到该付费模型（会产生实际费用）">切换付费</button></div>' +
+        '<div class="mr-action">' + paidAction + "</div>" +
         "</div>";
     }
     var isActive = m.id === activeId;
@@ -58,6 +63,7 @@
       ? '<span class="cool-time' + (m.reason ? " over" : "") + '">' + esc(until(m.until)) + "</span>"
       : '<span class="dim">—</span>';
     var switchBtn = '<button class="ghost" data-switch="' + esc(m.id) + '" type="button" title="下次请求强制切换到该模型">切换</button>';
+    var queueBtn = '<button class="ghost" data-queue-add="' + esc(m.id) + '" type="button" title="加入排队切换列表，排在自动候选之前">加入队列</button>';
     var toggleBtn = m.disabled
       ? '<button class="ghost ok" data-enable="' + esc(m.id) + '" type="button">启用</button>'
       : '<button class="ghost danger" data-disable="' + esc(m.id) + '" type="button">禁用</button>';
@@ -67,6 +73,6 @@
       '<div class="mr-cool" title="冷却剩余时间"><span class="dim">冷却</span> ' + coolCell + "</div>" +
       '<div class="mr-last" title="最近一次请求结果">' + last + ' <span class="dim mono">' + (m.lastSuccessAt ? clock(m.lastSuccessAt) : "—") + "</span></div>" +
       '<div class="mr-fail" title="连续失败次数">失败 ' + n(m.failures) + "</div>" +
-      '<div class="mr-action"><label class="pref-label" title="勾选后优先使用该模型">' + prefCheck + '</label>' + switchBtn + '<button class="ghost" data-clear="' + esc(m.id) + '" type="button">清除</button>' + toggleBtn + "</div>" +
+      '<div class="mr-action"><label class="pref-label" title="勾选后优先使用该模型">' + prefCheck + '</label>' + switchBtn + queueBtn + '<button class="ghost" data-clear="' + esc(m.id) + '" type="button">清除</button>' + toggleBtn + "</div>" +
       "</div>";
   }

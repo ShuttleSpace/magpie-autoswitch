@@ -55,4 +55,27 @@
     provSearch = ev.target.value || "";
     render();
   });
+  // 排队切换列表：执行队列切换（消耗队首）/ 清空队列。
+  // 列表项的增删改用事件委托（见 90-handlers.js），这里只绑定静态按钮。
+  var queueRunBtn = document.getElementById("queue-run");
+  if (queueRunBtn) queueRunBtn.addEventListener("click", function () {
+    var queue = (state && state.switchQueue) || [];
+    if (!queue.length) {
+      banner("队列为空");
+      return;
+    }
+    var head = queue[0];
+    var info = null;
+    var catalog = (state && state.catalog) || [];
+    for (var i = 0; i < catalog.length; i++) {
+      if (catalog[i] && catalog[i].id === head) { info = catalog[i]; break; }
+    }
+    var label = info && info.name ? info.name : head;
+    if (!window.confirm("执行队列切换：下一次请求将强制使用队首模型 " + label + "，并把它移出队列。确定继续？")) return;
+    action("/api/queue/run", {}, "已执行队列切换：下一次请求使用 " + head, "ok");
+  });
+  var queueClearBtn = document.getElementById("queue-clear");
+  if (queueClearBtn) queueClearBtn.addEventListener("click", function () {
+    action("/api/queue/clear", {}, "已清空队列", "ok");
+  });
   // 选择提供商 dialog：顶栏按钮打开，关闭按钮/点击遮罩关闭

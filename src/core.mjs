@@ -170,7 +170,7 @@ export function isFreeModel(row, config = DEFAULT_CONFIG) {
 
 const UNSAFE_IDS = new Set(["__proto__", "constructor", "prototype"]);
 
-export function normalizeModel(row) {
+export function normalizeModel(row, config = DEFAULT_CONFIG) {
   if (!row || typeof row !== "object") return undefined;
   const id = text(row.id);
   if (!id || UNSAFE_IDS.has(id) || isSelf(row) || isGroupID(id)) return undefined;
@@ -188,6 +188,9 @@ export function normalizeModel(row) {
     provider,
     name: text(row.display_name ?? row.name) || id,
     pricing: row.pricing ?? row.cost ?? undefined,
+    // 价格未知：Magpie 的 /v1/models 对约一半模型不给 pricing。价格未知
+    // 绝不当免费用，但控制台可以标出来让用户手动入队（风险自负）。
+    priceUnknown: !isFreeModel(row, config) && !(row.pricing && typeof row.pricing === "object") && !(row.cost && typeof row.cost === "object"),
     context: number(row.context_window ?? row.context_length) ?? 0,
     maxOutput: number(row.max_output_tokens ?? row.max_tokens) ?? 0,
     toolcall,
@@ -233,7 +236,7 @@ export function discoverFreeModels(rows, config = DEFAULT_CONFIG) {
   const seen = new Set();
   const out = [];
   for (const row of rows) {
-    const model = normalizeModel(row);
+    const model = normalizeModel(row, config);
     if (!model || seen.has(model.id)) continue;
     // includeModels 是用户显式白名单：强制纳入，跳过免费判定。
     // 请只填写你确认确实免费的模型（例如限时免费活动期间的模型），否则可能产生费用。
@@ -297,7 +300,7 @@ export function buildModelCatalog(rows, config = DEFAULT_CONFIG) {
   const seen = new Set();
   const out = [];
   for (const row of rows) {
-    const model = normalizeModel(row);
+    const model = normalizeModel(row, config);
     if (!model || seen.has(model.id)) continue;
     seen.add(model.id);
     out.push({ ...model, free: isFreeModel(row, config) });
@@ -332,6 +335,13 @@ export function roundRobinByProvider(models) {
 
 export function cooldownActive(entry, now = Date.now()) {
   return !!entry && Number.isFinite(entry.until) && entry.until > now;
+}
+
+// provider 账号级冷却：state.providers[provider] 记录该 provider 的账号额度
+// （OpenCode Zen Free 那种共享额度）耗尽到什么时候。额度是整个账号共用的，
+// 所以同 provider 的其它模型必然同样失败，必须整段跳过。
+export function providerResting(state, provider, now = Date.now()) {
+  return cooldownActive(state?.providers?.[provider], now);
 }
 
 export function needsOf(body) {
@@ -546,6 +556,27 @@ function resetCapMs(config, maxMs) {
 
 // Reads every reset hint the vendors are known to send, then the common
 // "try again in 20s" / "resets at <timestamp>" shapes in the error body.
+// Magpie / 上游账号额度提示常只给「本地钟点 + 时区」，没有 Retry-After：
+// "not asked again before 19:33 UTC+8" / "将在 2026-11-16 21:12:07 UTC+8 重置"。
+// 换算成绝对时间；只有钟点没有日期时取下一次到达该钟点的时刻。
+function clockResetAt(date, hh, mm, ss, offset, now) {
+  const h = Number(hh);
+  const m = Number(mm);
+  const s = ss === undefined ? 0 : Number(ss);
+  if (!Number.isInteger(h) || h > 23 || !Number.isInteger(m) || m > 59 || !Number.isInteger(s) || s > 59) return undefined;
+  const tz = offset === undefined ? 0 : Number(offset);
+  if (!Number.isFinite(tz) || Math.abs(tz) > 14) return undefined;
+  const tzMs = tz * 3_600_000;
+  const shifted = new Date(now + tzMs);
+  const day = date
+    ? Date.parse(`${date}T00:00:00Z`)
+    : Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate());
+  if (!Number.isFinite(day)) return undefined;
+  let at = day + h * 3_600_000 + m * 60_000 + s * 1000 - tzMs;
+  if (!date && at <= now) at += 86_400_000;
+  return at;
+}
+
 export function parseReset(headers, bodyText, now = Date.now(), maxMs = DEFAULT_CONFIG.maxCooldownSeconds * 1000) {
   const candidates = [];
   const add = (value, source) => {
@@ -573,6 +604,14 @@ export function parseReset(headers, bodyText, now = Date.now(), maxMs = DEFAULT_
     for (const match of body.matchAll(/\b(20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\b/g)) {
       add(match[1], "body timestamp");
     }
+    for (const match of body.matchAll(/not asked again before\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(?:UTC\s*([+-]\d{1,2}))?/gi)) {
+      const at = clockResetAt(undefined, match[1], match[2], match[3], match[4], now);
+      if (Number.isFinite(at)) add(new Date(at).toISOString(), "account rest clock");
+    }
+    for (const match of body.matchAll(/\b(20\d{2}-\d{2}-\d{2})[ ](\d{1,2}):(\d{2})(?::(\d{2}))?\s*(?:UTC\s*([+-]\d{1,2}))?/gi)) {
+      const at = clockResetAt(match[1], match[2], match[3], match[4], match[5], now);
+      if (Number.isFinite(at)) add(new Date(at).toISOString(), "body local timestamp");
+    }
     for (const match of body.matchAll(/(?:resets?_at|reset_at|retry_after|retryAt)["']?\s*[:=]\s*["']?(\d{10,13})/gi)) {
       add(match[1], "body reset");
     }
@@ -594,6 +633,19 @@ export function parseReset(headers, bodyText, now = Date.now(), maxMs = DEFAULT_
   if (!best) return undefined;
   const f = future(best.until, now, maxMs);
   return f ? { ...f, source: best.source } : undefined;
+}
+
+// Magpie/上游在「账号额度用尽」时的回答里会带上这些字样（Magpie 自己的
+// rest 措辞 "out of its allowance: not asked again before ..."，或上游 OpenCode
+// 的 "Free usage limit reached / Free models work in OpenCode"）。这不是某一个
+// 模型的问题，而是整个 provider（账号）在该时间前都用完了：同 provider 的其它
+// 模型会同样失败，所以这种 429 必须按 provider 冷却，而不是只冷却被问的那一个
+// 模型——否则一轮 maxTries 会被同一个耗尽的账号白白耗光。
+const ACCOUNT_REST = /out of its allowance|not asked again before|free usage limit reached|free models work in opencode/i;
+
+export function accountRestHit(status, bodyText) {
+  if (status !== 429) return false;
+  return ACCOUNT_REST.test(typeof bodyText === "string" ? bodyText : "");
 }
 
 export function modelProblem(bodyText) {

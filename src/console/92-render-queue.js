@@ -38,9 +38,13 @@
       var provider = info && info.provider ? info.provider : (id.split("/")[0] || "");
       // 目录里找不到 = 供应商下线了，模型仍然保留在队列里（不丢用户的顺序）。
       var missing = !info;
-      var isPaid = info ? info.free === false : false;
-      // 完全免费策略：付费模型不参与自动切换，只能手动执行队列切换。
-      var strategyNote = isPaid && paidOnly
+      var isPaid = info ? info.free === false && !info.priceUnknown : false;
+      var isUnknown = info ? !!info.priceUnknown : false;
+      // 完全免费策略：付费模型不参与自动切换，只能手动执行队列切换；
+      // 价格未知模型由用户手动入队，视为其已确认愿意承担费用风险。
+      var strategyNote = isUnknown
+        ? '<span class="tag unknown" title="Magpie 未提供价格，入队即表示你确认该模型免费并愿意承担误判费用风险">价格未知·手动</span>'
+        : isPaid && paidOnly
         ? '<span class="tag blocked" title="完全免费策略下付费模型不参与自动切换，只能手动执行队列切换">策略不参与自动切换</span>'
         : isPaid
         ? '<span class="tag paid">付费</span>'

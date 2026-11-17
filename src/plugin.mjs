@@ -3,11 +3,13 @@ import fs from "node:fs";
 import {
   PROVIDER,
   VERSION,
+  accountRestHit,
   cooldownFor,
   cooldownSummary,
   discoverFreeModels,
   buildModelCatalog,
   paidCandidates,
+  providerResting,
   summarizeUpstream,
   quotaPressure,
   stuckCalls,
@@ -192,6 +194,9 @@ function replayResponse(response, chunks, reader) {
 // `(429: you can retry your request)` 这种原始状态码。把它解析出来，重试/冷却
 // 才能按真实的限流来处理，而不是一律当成 502。
 function statusFromErrorMessage(text) {
+  // Magpie 有时把额度错误原文塞进 HTTP 502 / SSE error 帧，不带裸 429；
+  // 「账号额度用尽」字样本身就是限流信号，按 429 处理。
+  if (accountRestHit(429, text)) return 429;
   const match = /\((\d{3})\s*:\s*you can retry your request\)/i.test(text) ? text.match(/\((\d{3})\s*:/) : text.match(/\b(\d{3})\b.*rate.?limit/i);
   const code = match?.[1];
   const n = code ? Number(code) : NaN;
@@ -469,6 +474,41 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     }
   }
 
+  // 账号额度用尽（429 + "out of its allowance" / "Free usage limit reached"）：
+  // 额度是整个 provider 账号共用的，同 provider 的其它模型必然同样失败。按
+  // 模型分别冷却会让下一轮请求再把它们一个个试一遍，maxTries 全耗在同一个
+  // 已经死掉的额度上——这正是「所有免费模型都不可用」的成因。所以这里按
+  // provider 记一条冷却，整段跳过。
+  function markProviderRest(candidate, cooldown, error, status) {
+    if (!candidate.provider) return;
+    const previous = state.providers[candidate.provider] ?? {};
+    state.providers[candidate.provider] = {
+      ...previous,
+      // 不把已经生效的更长冷却缩短（同一 provider 的后续模型可能给出更短的 Retry-After）。
+      until: Math.max(Number(cooldown.until) || 0, Number(previous.until) || 0),
+      reason: cooldown.reason,
+      lastStatus: status ?? previous.lastStatus,
+      lastError: error ? String(error).slice(0, 1000) : previous.lastError,
+      lastAttemptAt: Date.now(),
+    };
+    try {
+      saveState(state);
+    } catch {
+      /* a read-only config directory must not break a request */
+    }
+  }
+
+  // 额度错误可能被 Magpie 包成 HTTP 502，或塞进 HTTP 200 的 SSE error 帧。
+  // 统一从错误正文还原真实状态（429），再按 provider 整段冷却。
+  function restProviderOnQuota(candidate, status, text, now, headers, config) {
+    if (!accountRestHit(status, text)) return false;
+    const rest = cooldownFor({ status, headers, bodyText: text, previousFailures: 0, now, config });
+    if (!rest) return false;
+    markProviderRest(candidate, rest, text, status);
+    log(input, "warn", `${candidate.provider}: account quota exhausted (HTTP ${status}), resting the whole provider until ${new Date(rest.until).toISOString()}`);
+    return true;
+  }
+
   function markSuccess(candidate, status) {
     const previous = state.models[candidate.id] ?? {};
     state.models[candidate.id] = {
@@ -553,7 +593,30 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       finishTrace(trace);
       return errorResponse(503, `无法从 Magpie 获取免费模型：${trace.error}`, trace.attempts, 0, trace.id);
     }
+    // 账号额度用尽的 provider 整段排除：额度是账号级的，它的其它模型必然同样
+    // 失败。留着它们只会让「所有免费模型都不可用」在一个已经耗尽的额度上空转。
+    const discovered = models.length;
+    models = models.filter((m) => !providerResting(state, m.provider, Date.now()));
     if (!models.length) {
+      // 全部候选都被「额度用尽」挡下时，这不是「没发现免费模型」，而是所有
+      // provider 的账号额度都还没恢复：给出 429 + 恢复时间，别让调用方当成
+      // 配置问题反复重试。
+      if (discovered > 0) {
+        const untils = Object.values(state.providers ?? {})
+          .map((p) => Number(p?.until))
+          .filter((n) => Number.isFinite(n) && n > Date.now());
+        const until = untils.length ? Math.max(...untils) : Date.now() + 60_000;
+        trace.exhausted = true;
+        trace.error = "every free provider account is out of quota";
+        finishTrace(trace);
+        return errorResponse(
+          429,
+          `所有免费模型的供应商账号额度都已用尽，约 ${Math.ceil((until - Date.now()) / 1000)} 秒后恢复。`,
+          trace.attempts,
+          Math.max(1, Math.ceil((until - Date.now()) / 1000)),
+          trace.id,
+        );
+      }
       trace.exhausted = true;
       trace.error = "no free models discovered";
       finishTrace(trace);
@@ -614,7 +677,10 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         rest = reorderByExpiry(rest, readCredits());
       }
     }
-    let ordered = [...queued, ...rest].slice(0, max);
+    // 不在这里按 maxTries 截断：账号额度用尽的 provider 会在循环里被跳过，
+    // 截断在前就会把这些名额浪费掉，后面真正可用的模型轮不到。maxTries 限制
+    // 的是「真正发出去的尝试次数」，由下面的 attempts 计数。
+    let ordered = [...queued, ...rest];
     if (forced && !forcedDisabled) {
       ordered = [forced, ...ordered.filter((m) => m.id !== forced.id)];
     }
@@ -630,11 +696,21 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     }
 
     let last;
+    let attempts = 0;
     for (const candidate of ordered) {
       if (request.signal.aborted) {
         trace.aborted = true;
         break;
       }
+      // 账号额度用尽的 provider 整段跳过：同 provider 的其它模型必然同样失败，
+      // 再试一次只是把 maxTries 名额浪费在同一个已经死掉的额度上。跳过的模型
+      // 不计入尝试次数，名额留给真正还能用的 provider。
+      if (providerResting(state, candidate.provider, Date.now())) {
+        log(input, "debug", `${candidate.id}: skipped, provider ${candidate.provider} is resting`);
+        continue;
+      }
+      if (attempts >= max) break;
+      attempts += 1;
       const attemptStarted = Date.now();
       const attempt = {
         model: candidate.id,
@@ -705,6 +781,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
           attempt.reason = cooldown.reason;
           attempt.cooldownUntil = cooldown.until;
           markCooldown(candidate, cooldown, response.status, attempt.error);
+          // 额度错误可能被包成 502；用正文还原的真实 429 整段冷却 provider。
+          restProviderOnQuota(candidate, statusFromErrorMessage(text) ?? response.status, text, attemptStarted, response.headers, config);
         }
         last = { status: response.status, text, response };
         log(input, "warn", `${candidate.id}: HTTP ${response.status}${cooldown ? `, cooling ${cooldown.seconds}s` : ""}`);
@@ -740,6 +818,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
             attempt.cooldownUntil = cooldown.until;
             markCooldown(candidate, cooldown, attempt.status, peek.error);
           }
+          // HTTP 200 的内嵌 SSE 错误帧同样可能是账号额度用尽。
+          restProviderOnQuota(candidate, attempt.status, peek.error, attemptStarted, response.headers, config);
           last = { status: attempt.status, text: peek.error };
           log(input, "warn", `${candidate.id}: stream error: ${peek.error}`);
           continue;
@@ -787,6 +867,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
           attempt.cooldownUntil = cooldown.until;
           markCooldown(candidate, cooldown, 502, attempt.error);
         }
+        // HTTP 200 + 非流式 JSON 错误体也可能携带账号额度错误。
+        restProviderOnQuota(candidate, statusFromErrorMessage(attempt.error) ?? 502, attempt.error, attemptStarted, response.headers, config);
         last = { status: 502, text };
         log(input, "warn", `${candidate.id}: ${attempt.error}`);
         continue;
@@ -947,7 +1029,12 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       seen.add(id);
       const model = freeById.get(id) ?? catalogById.get(id);
       if (!model) continue;
-      const isPaid = model.free === false;
+      const isPaid = model.free === false && !model.priceUnknown;
+      if (model.priceUnknown && strategy === "free") {
+        // 价格未知不是付费：用户显式把它放进队列、且使用「完全免费」策略，
+        // 视为其已确认愿意承担风险，允许自动调度（见 README 的免责声明）。
+        log(input, "warn", `queued model ${model.id} has unknown pricing; trying it on explicit user request`);
+      }
       if (isPaid) {
         // 完全免费策略：付费模型不自动使用，只能手动执行队列切换。
         if (strategy === "free") continue;
@@ -957,6 +1044,8 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       }
       if (state.models[model.id]?.disabled) continue;
       if (Array.isArray(state.disabledProviders) && state.disabledProviders.some((p) => matchesModel(model, p))) continue;
+      // 账号额度用尽的 provider 整段跳过（额度是账号级的）。
+      if (providerResting(state, model.provider, now)) continue;
       if (cooldownActive(state.models[model.id], now) && config.tryCooling === false) continue;
       out.push(model);
     }
@@ -1233,6 +1322,17 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       },
       upstream: upstreamView(config),
       disabledProviders: Array.isArray(state.disabledProviders) ? [...state.disabledProviders] : [],
+      // 供应商账号级冷却：整段 provider 被跳过，控制台按此显示额度恢复倒计时。
+      providerRests: Object.entries(state.providers ?? {})
+        .filter(([, entry]) => cooldownActive(entry, now))
+        .map(([provider, entry]) => ({
+          provider,
+          until: Number(entry.until),
+          reason: entry.reason ?? null,
+          lastStatus: entry.lastStatus ?? null,
+          lastError: entry.lastError ?? null,
+          lastAttemptAt: entry.lastAttemptAt ?? null,
+        })),
       manualSwitch: state.manualSwitch ?? null,
       // 排队切换列表：服务端是唯一权威，控制台只读这里的状态。
       switchQueue: queueIds(config),
@@ -1250,7 +1350,9 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
           provider: model.provider,
           name: model.name,
           free: !!model.free,
-          paidBlocked: paidBlockedReason(model),
+          priceUnknown: !!model.priceUnknown,
+          // 价格未知模型由用户显式入队，不受付费时段/余额闸门约束。
+          paidBlocked: model.priceUnknown ? null : paidBlockedReason(model),
           cooling: summary.cooling,
           until: summary.until,
           failures: entry.failures ?? 0,

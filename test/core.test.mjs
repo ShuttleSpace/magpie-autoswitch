@@ -227,6 +227,29 @@ test("retry hints are read from headers and common error bodies", () => {
   assert.equal(parseReset(new Headers({}), "no hint", now), undefined);
 });
 
+test("parseReset reads account-rest clock hints without Retry-After", () => {
+  // 2023-11-14T10:13:20Z = 2023-11-14 18:13:20 UTC+8。
+  const now = Date.parse("2023-11-14T10:13:20Z");
+  const config = { ...DEFAULT_CONFIG, maxResetSeconds: 7200 };
+  const cap = config.maxResetSeconds * 1000;
+  const clock = parseReset(new Headers({}), "out of its allowance: not asked again before 19:33 UTC+8", now, cap);
+  assert.equal(clock.source, "account rest clock");
+  assert.equal(clock.seconds, Math.ceil((Date.parse("2023-11-14T11:33:00Z") - now) / 1000));
+
+  // 带日期的中文措辞（上游 WorkBuddy 的真实形态）。
+  const dated = parseReset(new Headers({}), "将在 2026-11-16 21:12:07 UTC+8 重置", Date.parse("2026-11-16T10:00:00Z"), 8 * 3600_000);
+  assert.equal(dated.source, "body local timestamp");
+  assert.equal(dated.seconds, 3 * 3600 + 12 * 60 + 7);
+
+  // 已经过去的钟点取第二天，不会返回负数冷却。
+  const tomorrow = parseReset(new Headers({}), "not asked again before 00:30 UTC+8", now, DEFAULT_CONFIG.maxCooldownSeconds * 1000);
+  assert.ok(tomorrow.seconds > 0 && tomorrow.seconds <= 24 * 3600);
+
+  // 冷却时长受 maxResetSeconds 钳制，不会因为上游给了很久的时钟而冻死模型。
+  const capped = parseReset(new Headers({}), "not asked again before 19:33 UTC+8", now, cap);
+  assert.ok(capped.seconds <= config.maxResetSeconds);
+});
+
 test("cooldownFor chooses the reset hint first, then a bounded backoff", () => {
   const now = 1_700_000_000_000;
   const config = { ...DEFAULT_CONFIG, cooldownSeconds: 60, serverErrorCooldownSeconds: 30, authErrorCooldownSeconds: 300, modelGoneCooldownSeconds: 600, maxCooldownSeconds: 3600 };

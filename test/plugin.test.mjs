@@ -781,8 +781,265 @@ test("console disable / enable / switch endpoints route to the right handler", a
   await consoleServer.stop();
 });
 
-test("manual switch through the real console wiring forces the next request", async () => {
+test("an exhausted provider account is rested as a whole, not model by model", async () => {
   const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    // 上游额度用尽时整段 provider 都会失败（OpenCode Zen Free 的账号额度是
+    // 共用的）：一个模型报「额度用尽」，同 provider 的其它模型不必再试。
+    const quotaBody = (provider) =>
+      JSON.stringify({
+        error: {
+          code: null,
+          message: `${provider}: Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going (out of its allowance: not asked again before 20:37 UTC+8)`,
+          type: "rate_limit_error",
+        },
+      });
+    const gateway = await fakeGateway({
+      models: [
+        {
+          id: "opencode-zen-free/a",
+          owned_by: "opencode-zen-free",
+          display_name: "Zen A",
+          pricing: { prompt: "0", completion: "0" },
+        },
+        {
+          id: "opencode-zen-free/b",
+          owned_by: "opencode-zen-free",
+          display_name: "Zen B",
+          pricing: { prompt: "0", completion: "0" },
+        },
+        {
+          id: "healthy/x",
+          owned_by: "healthy",
+          display_name: "Healthy X",
+          pricing: { prompt: "0", completion: "0" },
+        },
+      ],
+      chat(req, res, body) {
+        if (body.model.startsWith("opencode-zen-free/")) {
+          res.writeHead(429, { "content-type": "application/json", "retry-after": "600" });
+          res.end(quotaBody("OpenCode Zen Free"));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "chat-1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+      },
+    });
+    process.env.MAGPIE_ADDR = gateway.url;
+    const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+    const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+    const request = () =>
+      loader.fetch(`${loader.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+    try {
+      const first = await request();
+      assert.equal(first.status, 200, "a healthy provider still answers");
+      const zenTries = gateway.calls.map((x) => x.model).filter((m) => m.startsWith("opencode-zen-free/"));
+      assert.equal(zenTries.length, 1, `only one zen model is tried, not all of them: ${zenTries.join(", ")}`);
+      assert.ok(gateway.calls.some((x) => x.model === "healthy/x"), "the healthy provider is reached");
+
+      // provider 级冷却落盘：下一次请求直接跳过整个 provider。
+      const state = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "state.json"), "utf8"));
+      assert.ok(state.providers["opencode-zen-free"], "the provider is rested as a whole");
+      assert.ok(state.providers["opencode-zen-free"].until > Date.now(), "the rest has a future until");
+
+      gateway.calls.length = 0;
+      const second = await request();
+      assert.equal(second.status, 200);
+      assert.equal(
+        gateway.calls.filter((x) => x.model.startsWith("opencode-zen-free/")).length,
+        0,
+        "the resting provider is skipped entirely on the next request",
+      );
+      assert.ok(gateway.calls.some((x) => x.model === "healthy/x"), "the healthy provider still answers");
+    } finally {
+      await hooks.lifecycle.dispose();
+      await gateway.close();
+    }
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a 502-wrapped quota error rests the whole provider and shows up in console state", async () => {
+  const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    // Magpie 会把上游 429 包成 HTTP 502 + api_error，正文里只有额度字样。
+    const quota = JSON.stringify({
+      message: "OpenCode Zen Free: Free usage limit reached. Free models work in OpenCode (out of its allowance: not asked again before 20:00 UTC+8)",
+      type: "api_error",
+    });
+    const rows = ["opencode-zen-free/a", "opencode-zen-free/b", "healthy/x"].map((id) => ({
+      id,
+      owned_by: id.split("/")[0],
+      pricing: { prompt: "0", completion: "0" },
+    }));
+    const gateway = await fakeGateway({
+      models: rows,
+      chat(req, res, body) {
+        if (body.model.startsWith("opencode-zen-free/")) {
+          res.writeHead(502, { "content-type": "application/json" });
+          res.end(quota);
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "chat-1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+      },
+    });
+    process.env.MAGPIE_ADDR = gateway.url;
+    const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+    const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+    try {
+      const response = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("x-free-switch-model"), "healthy/x");
+      assert.deepEqual(gateway.calls.map((x) => x.model), ["opencode-zen-free/a", "healthy/x"], "the sibling of the exhausted model is skipped");
+
+      const saved = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "state.json"), "utf8"));
+      assert.equal(saved.providers["opencode-zen-free"].lastStatus, 429, "the wrapped error is recognised as a rate limit");
+      assert.ok(saved.providers["opencode-zen-free"].until > Date.now());
+
+      const url = await hooks.console.start(0);
+      try {
+        const state = await (await fetch(`${url}/api/state`)).json();
+        const rest = (state.providerRests || []).find((r) => r.provider === "opencode-zen-free");
+        assert.ok(rest, "console state exposes the provider-level rest");
+        assert.equal(rest.lastStatus, 429);
+        assert.ok(rest.until > Date.now());
+      } finally {
+        await hooks.console.stop();
+      }
+    } finally {
+      await hooks.lifecycle.dispose();
+      await gateway.close();
+    }
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an in-band SSE quota error rests the whole provider", async () => {
+  const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    // HTTP 200 的 SSE 错误帧：没有裸 429，也没有 Retry-After。
+    const quotaFrame =
+      'data: {"error":{"message":"OpenCode Zen Free: Free usage limit reached. out of its allowance: not asked again before 20:00 UTC+8","type":"api_error"}}\n\n';
+    const rows = ["opencode-zen-free/a", "opencode-zen-free/b", "healthy/x"].map((id) => ({
+      id,
+      owned_by: id.split("/")[0],
+      pricing: { prompt: "0", completion: "0" },
+    }));
+    const gateway = await fakeGateway({
+      models: rows,
+      chat(req, res, body) {
+        if (body.model.startsWith("opencode-zen-free/")) {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.write(ROLE_CHUNK + quotaFrame);
+          res.end();
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write('data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n');
+        res.write("data: [DONE]\n\n");
+        res.end();
+      },
+    });
+    process.env.MAGPIE_ADDR = gateway.url;
+    const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+    const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+    try {
+      const response = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "auto", stream: true, messages: [{ role: "user", content: "hi" }] }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("x-free-switch-model"), "healthy/x");
+      assert.deepEqual(gateway.calls.map((x) => x.model), ["opencode-zen-free/a", "healthy/x"]);
+      const saved = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "state.json"), "utf8"));
+      assert.equal(saved.providers["opencode-zen-free"].lastStatus, 429);
+      assert.ok(saved.providers["opencode-zen-free"].until > Date.now());
+    } finally {
+      await hooks.lifecycle.dispose();
+      await gateway.close();
+    }
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an HTTP 200 JSON quota error body rests the whole provider", async () => {
+  const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    const rows = ["opencode-zen-free/a", "opencode-zen-free/b", "healthy/x"].map((id) => ({
+      id,
+      owned_by: id.split("/")[0],
+      pricing: { prompt: "0", completion: "0" },
+    }));
+    const gateway = await fakeGateway({
+      models: rows,
+      chat(req, res, body) {
+        if (body.model.startsWith("opencode-zen-free/")) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: "OpenCode Zen Free: Free usage limit reached (out of its allowance: not asked again before 20:00 UTC+8)" } }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "chat-1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+      },
+    });
+    process.env.MAGPIE_ADDR = gateway.url;
+    const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+    const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+    try {
+      const response = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("x-free-switch-model"), "healthy/x");
+      assert.deepEqual(gateway.calls.map((x) => x.model), ["opencode-zen-free/a", "healthy/x"]);
+      const saved = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "state.json"), "utf8"));
+      assert.equal(saved.providers["opencode-zen-free"].lastStatus, 429);
+    } finally {
+      await hooks.lifecycle.dispose();
+      await gateway.close();
+    }
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("manual switch through the real console wiring forces the next request", async () => {  const dir = tmpdir();
   process.env.MAGPIE_CONFIG_DIR = dir;
   fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
   fs.writeFileSync(path.join(dir, "free-switch", "config.json"), JSON.stringify({ console: true, consolePort: 0, refreshSeconds: 5 }));
@@ -979,6 +1236,60 @@ test("a paid model in the queue is not auto-tried under the free-only strategy",
     assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/a"], "the free pool is used instead");
     await hooks.lifecycle.dispose();
     await gateway.close();
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
+    else process.env.MAGPIE_CONFIG_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a price-unknown model is discoverable in the catalog and auto-tried once queued", async () => {
+  const dir = tmpdir();
+  const previous = process.env.MAGPIE_CONFIG_DIR;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    fs.mkdirSync(path.join(dir, "free-switch"), { recursive: true });
+    // 价格未知模型不在免费池里，但用户显式入队后应被调度（完全免费策略下视为用户确认）。
+    fs.writeFileSync(path.join(dir, "free-switch", "config.json"), JSON.stringify({ strategy: "free", switchQueue: ["unknown/mystery"], console: true, consolePort: 0 }));
+    const rows = [
+      ...models(),
+      { id: "unknown/mystery", owned_by: "unknown", display_name: "Mystery", modalities: { input: ["text"], output: ["text"] } },
+    ];
+    const gateway = await fakeGateway({
+      models: rows,
+      chat(req, res, body) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "chat-1", model: body.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] }));
+      },
+    });
+    process.env.MAGPIE_ADDR = gateway.url;
+    const hooks = await createFreeSwitchPlugin({ magpie: { option: () => undefined } });
+    const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+    try {
+      await loader.fetch(`${loader.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "warmup" }] }),
+      });
+      const url = await hooks.console.url;
+      const state = await (await fetch(`${url}/api/state`)).json();
+      const entry = (state.catalog || []).find((m) => m.id === "unknown/mystery");
+      assert.ok(entry, "price-unknown model is visible in the catalog");
+      assert.equal(entry.priceUnknown, true);
+      assert.equal(state.models.some((m) => m.id === "unknown/mystery"), false, "it is not in the auto free pool");
+
+      const reply = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+      });
+      assert.equal(reply.status, 200);
+      assert.equal(gateway.calls[0].model, "unknown/mystery", "the queued price-unknown model is tried first");
+    } finally {
+      await hooks.console.stop();
+      await hooks.lifecycle.dispose();
+      await gateway.close();
+    }
   } finally {
     if (previous === undefined) delete process.env.MAGPIE_CONFIG_DIR;
     else process.env.MAGPIE_CONFIG_DIR = previous;

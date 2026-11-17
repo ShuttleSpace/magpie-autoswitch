@@ -93,8 +93,11 @@
     var selProviders = effectiveProviders(models, state.config?.includeProviders);
     var selSet = {};
     selProviders.forEach(function (p) { selSet[p] = true; });
+    // 供应商账号级冷却（额度用尽）：整段 provider 被跳过，按 provider 建索引供列表与模型行显示。
+    var restMap = {};
+    (Array.isArray(state.providerRests) ? state.providerRests : []).forEach(function (r) { if (r && r.provider) restMap[r.provider] = r; });
     var allProviders = state.allProviders || [];
-    var dlgHTML = renderProviderDialogRows(allProviders, models, selSet, creditMap, provDisabledObj);
+    var dlgHTML = renderProviderDialogRows(allProviders, models, selSet, creditMap, provDisabledObj, restMap);
     htmlIfChanged("dlg-prov-list", dlgHTML);
     hidden("dlg-prov-empty", !!dlgHTML);
     txt("prov-count", allProviders.length ? "· " + allProviders.length : "");
@@ -109,14 +112,14 @@
     var allRows = catalog.map(function (c) {
       var m = freeMap[c.id];
       return m || {
-        id: c.id, provider: c.provider, name: c.name, paid: !c.free, paidBlocked: c.paidBlocked ?? null,
+        id: c.id, provider: c.provider, name: c.name, paid: !c.free, priceUnknown: c.priceUnknown, paidBlocked: c.paidBlocked ?? null,
         cooling: false, until: 0, failures: 0, lastStatus: null, lastError: null,
         reason: null, disabled: false, lastSuccessAt: null,
         context: c.context, image: c.image, toolcall: c.toolcall, reasoning: c.reasoning,
       };
     });
 
-    var selHTML = renderSelectedProviders(selProviders, models, creditMap, provDisabledObj, paidCounts);
+    var selHTML = renderSelectedProviders(selProviders, models, creditMap, provDisabledObj, paidCounts, restMap);
     htmlIfChanged("sel-prov-list", selHTML);
     hidden("sel-prov-empty", !!selHTML);
     txt("sel-count", selProviders.length ? "· " + selProviders.length : "");

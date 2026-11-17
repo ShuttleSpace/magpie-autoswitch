@@ -17,7 +17,7 @@
     if (Array.isArray(includeProviders) && includeProviders.length) return includeProviders.slice();
     return Object.keys(freeSet);
   }
-  function renderProviderDialogRows(allProviders, models, selectedSet, creditMap, disabledProviders) {
+  function renderProviderDialogRows(allProviders, models, selectedSet, creditMap, disabledProviders, providerRests) {
     var q = (provSearch || "").trim().toLowerCase();
     var parts = [];
     (allProviders || []).forEach(function (prov) {
@@ -37,6 +37,10 @@
       var expiry = expiryText(credit && credit.resetAt);
       var expiryMark = expiry ? '<span class="chip-credit expiring" title="积分/配额到期时间：' + esc(clock(credit.resetAt)) + '">' + esc(expiry) + "</span>" : "";
       var disabledMark = disabledProviders[p] ? '<span class="chip-credit">已禁用</span>' : "";
+      var rest = providerRests && providerRests[p];
+      var restMark = rest
+        ? '<span class="chip-credit expiring" title="账号级额度已用尽（' + esc(rest.reason || "rate limit") + '），约 ' + esc(until(rest.until)) + ' 后恢复">额度用尽 ' + esc(until(rest.until)) + "</span>"
+        : "";
       var cls = ["dlg-item", selected ? "selected" : ""].filter(Boolean).join(" ");
       parts.push(
         '<label class="' + cls + '" data-prov="' + esc(p) + '">' +
@@ -44,14 +48,14 @@
           '<span class="chip-ic">' + provIcon(p) + "</span>" +
           '<span class="chip-name">' + esc(p) + "</span>" +
           freeTag +
-          '<span class="chip-credit-wrap">' + creditText + expiryMark + disabledMark + "</span>" +
+          '<span class="chip-credit-wrap">' + creditText + expiryMark + disabledMark + restMark + "</span>" +
           '<button class="ghost only-btn" data-only-provider="' + esc(p) + '" type="button" title="只选这一个提供商">仅选</button>' +
         "</label>"
       );
     });
     return parts.join("");
   }
-  function renderSelectedProviders(selectedIds, models, creditMap, disabledProviders, paidCounts) {
+  function renderSelectedProviders(selectedIds, models, creditMap, disabledProviders, paidCounts, providerRests) {
     var parts = [];
     (selectedIds || []).slice().sort().forEach(function (p) {
       var h = providerHealth(models, p);
@@ -69,7 +73,11 @@
       var expiryPart = expiry
         ? '<span class="prov-credit expiring" title="积分/配额到期时间：' + esc(clock(credit.resetAt)) + '">' + esc(expiry) + "</span>"
         : "";
-      var cls = ["prov-item", h.status, provFocus === p ? "selected" : "", hasCredits ? "has-credits" : "", disabledProviders[p] ? "disabled" : ""].filter(Boolean).join(" ");
+      var rest = providerRests && providerRests[p];
+      var restMark = rest
+        ? '<span class="tag blocked" title="账号级免费额度已用尽（' + esc(rest.reason || "rate limit") + '），' + esc(clock(rest.until)) + ' 前该供应商所有模型都会被自动切换跳过">额度用尽 ' + esc(until(rest.until)) + "</span>"
+        : "";
+      var cls = ["prov-item", h.status, provFocus === p ? "selected" : "", hasCredits ? "has-credits" : "", disabledProviders[p] ? "disabled" : "", rest ? "resting" : ""].filter(Boolean).join(" ");
       var freeTag = h.total > 0 ? '<span class="tag free">免费</span>' : '<span class="tag paid">付费</span>';
       var creditPart = hasCredits
         ? '<span class="prov-credit">积分 <b>' + (credit.used ?? 0) + "/" + (credit.total ?? 0) + "</b>" + (credit.balance !== undefined ? " · 余额 " + credit.balance : "") + "</span>"
@@ -90,6 +98,7 @@
             '<span class="prov-stat"><span class="dot"></span>' + esc(sub) + "</span>" +
             creditPart +
             expiryPart +
+            restMark +
           "</div>" +
         "</div>"
       );

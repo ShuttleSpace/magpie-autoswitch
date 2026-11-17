@@ -260,6 +260,11 @@ export function emptyState() {
     version: 1,
     updatedAt: Date.now(),
     models: {},
+    // Provider-level (account-level) quota rests, keyed by provider id:
+    // { provider: { until, reason, lastError } }. An exhausted shared quota
+    // (OpenCode Zen Free) takes down every model of that provider, so the
+    // rest is kept here instead of per model.
+    providers: {},
     // Provider-level manual disables, e.g. ["kilo"]. A disabled provider never
     // takes part in auto failover until it is enabled again.
     disabledProviders: [],
@@ -282,6 +287,7 @@ export function loadState() {
   const state = emptyState();
   if (saved && typeof saved === "object") {
     if (saved.models && typeof saved.models === "object") state.models = saved.models;
+    if (saved.providers && typeof saved.providers === "object") state.providers = saved.providers;
     if (Array.isArray(saved.disabledProviders)) state.disabledProviders = saved.disabledProviders.filter((x) => typeof x === "string" && x.trim());
     if (saved.manualSwitch && typeof saved.manualSwitch === "object") state.manualSwitch = saved.manualSwitch;
     if (saved.stats && typeof saved.stats === "object") state.stats = { ...state.stats, ...saved.stats };
@@ -292,6 +298,15 @@ export function loadState() {
   }
   const now = Date.now();
   for (const id of ["__proto__", "constructor", "prototype"]) delete state.models[id];
+  for (const id of Object.keys(state.providers)) {
+    const entry = state.providers[id];
+    if (!entry || typeof entry !== "object" || !Number.isFinite(Number(entry.until))) {
+      delete state.providers[id];
+      continue;
+    }
+    entry.until = Number(entry.until);
+    if (entry.until <= now) delete state.providers[id];
+  }
   for (const [id, entry] of Object.entries(state.models)) {
     if (!entry || typeof entry !== "object") {
       delete state.models[id];

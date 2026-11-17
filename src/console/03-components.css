@@ -56,6 +56,8 @@
   .tag.blocked { color: var(--dim); border-color: rgba(148,163,184,0.30); background: rgba(148,163,184,0.08); text-decoration: line-through; }
   .tag.free { color: var(--teal); border-color: rgba(94,234,212,0.34); background: rgba(94,234,212,0.08); }
   .tag.paid { color: var(--amber); border-color: rgba(255,180,84,0.34); background: rgba(255,180,84,0.08); }
+  /* 价格未知：用户手动入队才参与调度，用醒目色区分于普通付费模型。 */
+  .tag.unknown { color: var(--red); border-color: rgba(255,107,107,0.34); background: rgba(255,107,107,0.08); text-decoration: none; }
   .muted { color: var(--muted); }
   .dim { color: var(--dim); }
   .mono { font-family: "SFMono-Regular", "Cascadia Code", "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }

@@ -26,6 +26,7 @@ import {
   withinPaidWindow,
   matchesModel,
   needsOf,
+  parseFreeModelNotice,
   selectCandidates,
   shouldStop,
   supports,
@@ -197,6 +198,9 @@ function statusFromErrorMessage(text) {
   // Magpie 有时把额度错误原文塞进 HTTP 502 / SSE error 帧，不带裸 429；
   // 「账号额度用尽」字样本身就是限流信号，按 429 处理。
   if (accountRestHit(429, text)) return 429;
+  // Zen 下架模型时返回的是 404+「Free models:」清单；被包成 200 SSE/JSON 时
+  // 没有状态码，必须按 404 识别才能走 model-not-found 冷却而不是通用 5xx。
+  if (/free models:/i.test(text) && /\bnot\s+available\b/i.test(text)) return 404;
   const match = /\((\d{3})\s*:\s*you can retry your request\)/i.test(text) ? text.match(/\((\d{3})\s*:/) : text.match(/\b(\d{3})\b.*rate.?limit/i);
   const code = match?.[1];
   const n = code ? Number(code) : NaN;
@@ -657,7 +661,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
     // 上游雷达：只把观察到近期 429/5xx 的模型排到末尾，不删除候选。
     // 数据来自后台缓存，拿不到时 summary 为空 → demoteUpstream 原样返回。
     const upstream = upstreamView(config);
-    const max = Math.max(1, Math.min(20, Math.trunc(Number(config.maxTries) || 6)));
+    let max = Math.max(1, Math.min(20, Math.trunc(Number(config.maxTries) || 6)));
     // 基础候选（免费池，未截断）。排队切换列表的候选必须在截断前合并进来，
     // 否则队首模型会被 maxTries 的初始切片直接丢掉。
     let rest = demoteUpstream(selection.orderedAll, upstream.summary, Date.now());
@@ -697,6 +701,33 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
 
     let last;
     let attempts = 0;
+    // 上游在错误里带出的「Free models:」清单比 /v1/models 更权威：同 provider
+    // 不在清单里的模型都已经下架。记住后从本次及后续请求里直接摘掉，避免
+    // 逐个撞下架模型直到 maxTries 用尽、把错误暴露给 agent。
+    const freeRanges = new Map();
+    const freeName = (model) => {
+      const id = String(model.id || "");
+      return (id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id).toLowerCase();
+    };
+    const inFreeRange = (model) => {
+      const allowed = freeRanges.get(model.provider);
+      if (!allowed) return true;
+      return allowed.has(freeName(model)) || allowed.has(String(model.name || "").toLowerCase());
+    };
+    const noteFreeRange = (candidate, text) => {
+      const names = parseFreeModelNotice(text);
+      if (!candidate?.provider || !names.length) return;
+      freeRanges.set(candidate.provider, new Set(names.map((name) => name.toLowerCase())));
+      const cooldown = cooldownFor({ status: 404, now: Date.now(), config: effectiveConfig() });
+      for (const model of [...models, ...catalog]) {
+        if (model.provider !== candidate.provider || inFreeRange(model)) continue;
+        const previous = state.models[model.id];
+        if (previous && Number(previous.until) >= cooldown.until) continue;
+        markCooldown(model, cooldown, 404, "not in provider free list");
+      }
+      // 下架模型不算真正的模型尝试：留一次切到清单内模型的机会。
+      max = Math.max(max, attempts + 1);
+    };
     for (const candidate of ordered) {
       if (request.signal.aborted) {
         trace.aborted = true;
@@ -707,6 +738,10 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       // 不计入尝试次数，名额留给真正还能用的 provider。
       if (providerResting(state, candidate.provider, Date.now())) {
         log(input, "debug", `${candidate.id}: skipped, provider ${candidate.provider} is resting`);
+        continue;
+      }
+      if (!inFreeRange(candidate)) {
+        log(input, "debug", `${candidate.id}: skipped, no longer in provider free list`);
         continue;
       }
       if (attempts >= max) break;
@@ -751,6 +786,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
           attempt.cooldownUntil = cooldown.until;
           markCooldown(candidate, { ...cooldown, reason: attempt.reason }, 0, attempt.error);
         }
+        noteFreeRange({ id: candidate.id, provider: candidate.provider }, attempt.error);
         last = { status: 0, text: attempt.error };
         log(input, "warn", `${candidate.id}: ${timedOut ? "first byte timeout" : attempt.error}`);
         continue;
@@ -784,6 +820,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
           // 额度错误可能被包成 502；用正文还原的真实 429 整段冷却 provider。
           restProviderOnQuota(candidate, statusFromErrorMessage(text) ?? response.status, text, attemptStarted, response.headers, config);
         }
+        noteFreeRange({ id: candidate.id, provider: candidate.provider }, text);
         last = { status: response.status, text, response };
         log(input, "warn", `${candidate.id}: HTTP ${response.status}${cooldown ? `, cooling ${cooldown.seconds}s` : ""}`);
         if (shouldStop(response.status, text)) {
@@ -820,6 +857,7 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
           }
           // HTTP 200 的内嵌 SSE 错误帧同样可能是账号额度用尽。
           restProviderOnQuota(candidate, attempt.status, peek.error, attemptStarted, response.headers, config);
+          noteFreeRange({ id: candidate.id, provider: candidate.provider }, peek.error);
           last = { status: attempt.status, text: peek.error };
           log(input, "warn", `${candidate.id}: stream error: ${peek.error}`);
           continue;
@@ -853,9 +891,9 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
       }
       if (!text.trim() || parsed?.error) {
         attempt.error = parsed?.error ? JSON.stringify(parsed.error).slice(0, 1000) : "upstream returned an empty body";
-        attempt.status = 502;
+        attempt.status = statusFromErrorMessage(attempt.error) ?? 502;
         const cooldown = cooldownFor({
-          status: 502,
+          status: attempt.status,
           headers: response.headers,
           bodyText: attempt.error,
           previousFailures: state.models[candidate.id]?.failures ?? 0,
@@ -865,11 +903,12 @@ export async function createFreeSwitchPlugin(input = {}, _options = {}) {
         if (cooldown) {
           attempt.reason = cooldown.reason;
           attempt.cooldownUntil = cooldown.until;
-          markCooldown(candidate, cooldown, 502, attempt.error);
+          markCooldown(candidate, cooldown, attempt.status, attempt.error);
         }
         // HTTP 200 + 非流式 JSON 错误体也可能携带账号额度错误。
-        restProviderOnQuota(candidate, statusFromErrorMessage(attempt.error) ?? 502, attempt.error, attemptStarted, response.headers, config);
-        last = { status: 502, text };
+        restProviderOnQuota(candidate, attempt.status, attempt.error, attemptStarted, response.headers, config);
+        noteFreeRange({ id: candidate.id, provider: candidate.provider }, attempt.error);
+        last = { status: attempt.status, text };
         log(input, "warn", `${candidate.id}: ${attempt.error}`);
         continue;
       }

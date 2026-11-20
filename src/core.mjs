@@ -19,7 +19,7 @@ export function parseBalance(value) {
 }
 
 // Bump alongside RELEASE_NOTES.md when shipping a change.
-export const VERSION = "0.8.1";
+export const VERSION = "0.8.2";
 
 // Auto-switch strategy: how paid models participate in the failover pool.
 // "free"        — paid models are never tried automatically (default).
@@ -654,6 +654,18 @@ export function modelProblem(bodyText) {
   const namesModel = /\bmodels?\b|模型/i.test(s);
   const refuses = /not\s+(?:found|available|supported|served)|unsupported|does\s*n[o']?t\s+exist|no\s+access|not\s+allowed|不存在|不支持|不可用|无权限|未开通/i.test(s);
   return namesModel && refuses;
+}
+
+// OpenCode Zen Free 在下架模型时会带出当前可用的免费清单。这份清单比
+// /v1/models 的缓存更权威，用它把已下架的同 provider 模型直接摘掉。
+export function parseFreeModelNotice(bodyText) {
+  const s = typeof bodyText === "string" ? bodyText : "";
+  const match = s.match(/free models:\s*([a-z0-9._-]+(?:\s*,\s*[a-z0-9._-]+)*)/i);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((name) => name.trim().replace(/\.+$/, ""))
+    .filter((name) => name && name.toLowerCase() !== "none");
 }
 
 // 区域限制：模型在你的国家/地区不可用。这类错误不是限流也不是账号问题，

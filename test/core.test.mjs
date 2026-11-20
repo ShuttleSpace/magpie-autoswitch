@@ -29,6 +29,7 @@ import {
   reorderByExpiry,
   reorderQueue,
   parseBalance,
+  parseFreeModelNotice,
   STRATEGIES,
 } from "../src/core.mjs";
 
@@ -652,6 +653,18 @@ test("parseBalance reads the currency/credit strings magpie actually stores", ()
   assert.equal(parseBalance("unknown"), undefined);
   assert.equal(parseBalance(undefined), undefined);
   assert.equal(parseBalance(null), undefined);
+});
+
+test("parseFreeModelNotice reads the authoritative free-model list from an upstream error", () => {
+  const message = "Model cat-jam-free is not available as an OpenCode Zen free model now. Free models: beam-free, big-pickle, deepseek-v4.1-flash-free, nemotron-3.5-super-vl-free.";
+  assert.deepEqual(parseFreeModelNotice(message), [
+    "beam-free",
+    "big-pickle",
+    "deepseek-v4.1-flash-free",
+    "nemotron-3.5-super-vl-free",
+  ]);
+  assert.deepEqual(parseFreeModelNotice("HTTP 500: upstream failed"), []);
+  assert.deepEqual(parseFreeModelNotice("Free models: none."), []);
 });
 
 test("paidCandidates honours a balance floor for currency-string balances", () => {

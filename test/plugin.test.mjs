@@ -1398,3 +1398,118 @@ test("setConfig validates and persists the editable whitelist", async () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// OpenCode Zen Free 会把下架模型的 404 正文里带上「当前免费清单」。清单比
+// /v1/models 缓存更权威：插件必须据此跳过同 provider 的其它下架模型，
+// 即使 maxTries=1 也要自动切到清单内模型，不能把错误抛给 agent。
+const ZEN_FREE_NOTICE =
+  "Model cat-jam-free is not available as an OpenCode Zen free model now. Free models: beam-free, big-pickle, deepseek-v4.1-flash-free, flint-40b-free, hy4-flash-free, iceman-free, longcat-2.5-free, mimo-v2.6-flash-free, nemotron-3.5-lightning-free, nemotron-3.5-super-vl-free, tidepool-alpha-free.";
+const zenModel = (id, name) => ({
+  id: `zen/${id}`,
+  owned_by: "opencode-zen-free",
+  display_name: name,
+  pricing: { prompt: "0", completion: "0" },
+  tool_call: true,
+  reasoning: true,
+  modalities: { input: ["text"], output: ["text"] },
+  context_window: 128000,
+  max_output_tokens: 32000,
+});
+const zenRows = () => [zenModel("cat-jam-free", "Cat Jam"), zenModel("flint-40b-free", "Flint"), zenModel("beam-free", "Beam")];
+const zenReply = (model) => JSON.stringify({ id: "chat-1", model, choices: [{ index: 0, message: { role: "assistant", content: "ok" } }] });
+
+test("a retired free model switches to the model named in the upstream free list", async () => {
+  const dir = tmpdir();
+  const previous = process.env.FREE_SWITCH_MAX_TRIES;
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  process.env.FREE_SWITCH_MAX_TRIES = "1";
+  try {
+    const gateway = await fakeGateway({
+      models: zenRows(),
+      chat(req, res, body) {
+        if (body.model !== "zen/beam-free") {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { type: "not_found_error", message: ZEN_FREE_NOTICE } }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(zenReply(body.model));
+      },
+    });
+    process.env.MAGPIE_ADDR = gateway.url;
+    const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+    const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+    const request = () =>
+      loader.fetch(`${loader.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+    const response = await request();
+    assert.equal(response.status, 200, "the caller must not see the retired-model error");
+    assert.equal(response.headers.get("x-free-switch-model"), "zen/beam-free");
+    assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/beam-free"], "the live model is selected from the notice");
+    assert.equal((await response.json()).model, "zen/beam-free");
+
+    const state = JSON.parse(fs.readFileSync(path.join(dir, "free-switch", "state.json"), "utf8"));
+    assert.ok(state.models["zen/beam-free"].until === 0, "the live model is not cooled");
+    const traces = fs.readFileSync(path.join(dir, "free-switch", "traces.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(traces[0].attempts.length, 1);
+    assert.equal(traces[0].attempts[0].status, 200);
+    assert.equal(traces[0].ok, true);
+
+    gateway.calls.length = 0;
+    const next = await request();
+    assert.equal(next.status, 200);
+    assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/beam-free"], "future requests start from the live model");
+    await hooks.lifecycle.dispose();
+    await gateway.close();
+  } finally {
+    if (previous === undefined) delete process.env.FREE_SWITCH_MAX_TRIES;
+    else process.env.FREE_SWITCH_MAX_TRIES = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an in-band retired-model error in a 200 SSE stream is classified as 404 and switched", async () => {
+  const dir = tmpdir();
+  process.env.MAGPIE_CONFIG_DIR = dir;
+  try {
+    const gateway = await fakeGateway({
+      models: zenRows(),
+      chat(req, res, body) {
+        if (body.model !== "zen/beam-free") {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.end(`data: ${JSON.stringify({ error: { type: "not_found_error", message: ZEN_FREE_NOTICE } })}\n\n`);
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write('data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n');
+        res.write("data: [DONE]\n\n");
+        res.end();
+      },
+    });
+    process.env.MAGPIE_ADDR = gateway.url;
+    const hooks = await createFreeSwitchPlugin({ magpie: { option: () => false } });
+    const loader = await hooks.auth.loader(async () => ({ type: "api", key: "public" }));
+    const response = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "auto", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-free-switch-model"), "zen/beam-free");
+    assert.match(await response.text(), /hello/);
+    assert.deepEqual(gateway.calls.map((x) => x.model), ["zen/beam-free"]);
+    const traceText = fs.readFileSync(path.join(dir, "free-switch", "traces.jsonl"), "utf8").trim();
+    if (traceText) {
+      const traces = traceText.split("\n").map((line) => JSON.parse(line));
+      if (traces[0]?.attempts?.[0]?.status === 404) assert.equal(traces[0].attempts[0].reason, "model not found");
+    }
+    await hooks.lifecycle.dispose();
+    await gateway.close();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

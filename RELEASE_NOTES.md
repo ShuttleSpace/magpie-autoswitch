@@ -2,6 +2,16 @@
 
 版本号与 `package.json` / `src/core.mjs` 的 `VERSION` 保持一致；控制台「⚙ 设置」里会显示当前版本。
 
+## 0.8.2 — 2026-11-20
+
+### 修复：OpenCode Zen Free 下架模型不再让 agent 停下来
+
+- **根因**：上游下架模型（如 `cat-jam-free`）时会在错误里带出权威的 `Free models:` 清单，但 Magpie `/v1/models` 缓存仍列出这些模型。插件按缓存逐个尝试，耗尽 `maxTries` 后把错误抛给 agent；in-band 错误还被当成 502，不能按模型下线冷却。
+- **清单驱动的提前切换**：新增 `parseFreeModelNotice`，从错误正文解析 `Free models:` 名单（支持 `deepseek-v4.1-flash-free` 这类带点号的名字）。任何候选失败后，同 provider 不在名单里的模型立即跳过并写入 10 分钟 cooldown，本次及后续请求都直接切到名单内的模型。
+- **不再浪费唯一一次尝试**：遇到下架模型时额外留一次切换机会，即使 `maxTries: 1` 也能无感 failover。
+- **真实状态码**：HTTP 200 SSE/JSON 内嵌的 “not available … Free models:” 错误按 404 / model-not-found 处理；非流式 JSON 错误不再硬编码 502。
+- **回归测试**：新增清单解析单测，以及直接 404 与 200 in-band SSE 两种下架场景的端到端测试；`npm test` 共 75 项全过。
+
 ## 0.8.1 — 2026-11-11
 
 ### 修复：429 / 5xx 被 Magpie 包成 200 + in-band SSE 错误帧时不再被当成成功
